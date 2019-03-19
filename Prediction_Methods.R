@@ -18,8 +18,10 @@ library(caret)
 library(kernlab)
 library(RSNNS)
 
+setwd("/panfs/roc/groups/4/zhangl4/diler001/NCAA/")
+
 # Reading in data
-desResp <- readRDS("Our_Data/designResponse.rds")
+desResp <- readRDS("designResponse.rds")
 
 # Standardizing predictors and removing some columns
 designMat <- subset(desResp[[1]], select = -c(Awin, Season, Tourney, Spread,
@@ -52,10 +54,8 @@ designMats <- list(MOV = model.matrix(forms$MOV, data = modelDats$MOV),
 # Should be one of 'MOV' or 'Awin'
 model <- "MOV"
 #model <- "Awin"
-
-# Setting training size and seed
 seed <- 1994
-trainSize <- 0.01
+trainSize <- 0.80
 set.seed(seed)
 
 # Randomly selecting training set
@@ -96,7 +96,7 @@ my.tree.pruned <- prune.tree(my.tree, k = opt.k)
 # (3) Linear/Logistic Regression with Lasso Penalty using 10-fold CV
 cvglmFit <- cv.glmnet(x = designMat, y = outcome[complete.cases(modelData)], 
                       nfolds = 10, family = ifelse(model == "Awin", "binomial", "gaussian"),
-                      lambda = c(seq(0.0001, 0.001, by = 0.0001), seq(0.005, 0.05, by = 0.005)))
+                      lambda = c(0.001, 0.003, seq(0.005, 0.50, by = 0.005)))
 
 # (4) Principle Components Regression with 10-fold CV
 pcrFit <- pcr(form, data = modelData.pcr, validation = "CV", segments = 10)
@@ -111,80 +111,77 @@ ldaFit <- lda(form, data = modelData)
 # (6) Optimally tuned mtry value random forest
 # For final run increase ntreeTry, decrease improve to 0.01
 defMtry <- floor(sqrt(ncol(modelData)))
-my.rf <- caret::train(form = form, data = modelData, method = "rf", 
-                      trControl = ctrl, ntree = 1000,
-                      tuneGrid = expand.grid(mtry =(defMtry - 2):(defMtry + 3)))
+inputs <- expand.grid(mtry =(defMtry - 4):(defMtry + 4), ntree = 1000)
+argus <- list(method = "rf")
 
 # (7) Stochastic Gradient boosting
-# For final run try n.trees = 5000
-my.boost <- caret::train(form = form, data = modelData, method = "gbm", 
-                         distribution = ifelse(model == "Awin", 
-                                               "bernoulli", "gaussian"),
-                         trControl = ctrl, tuneGrid = expand.grid(n.trees = c(25, 50, 100, seq(250, 2500, by = 250)), 
-                                                                  shrinkage = c(0.05, 0.10, 0.16, seq(0.20, 1, by = 0.20)),
-                                                                  interaction.depth = 1:5, n.minobsinnode = 8:12))
-
+inputs <- expand.grid(n.trees = c(25, 50, 100, seq(250, 2500, by = 250)), 
+                      shrinkage = c(0.05, 0.10, 0.16, seq(0.20, 1, by = 0.20)),
+                      interaction.depth = 1:5, n.minobsinnode = 8:12)
+argus <- list(method = "gbm", distribution = ifelse(model == "Awin", 
+                                    "bernoulli", "gaussian"))
+  
 # (8) Artificial Neural Network w/ 1 hidden layer
-my.nnet <- caret::train(form, data = modelData, method = "nnet", 
-                        trControl = ctrl, trace = FALSE, maxit = 10000,
-                        tuneGrid = expand.grid(size = c(3:7),
-                                               decay = c(0.001, 0.005, 0.01, 0.015, 0.02, 0.03)),
-                        linout = ifelse(model == "Awin", FALSE, TRUE))
+inputs <- expand.grid(size = c(2:10),
+                      decay = c(0.001, 0.005, 0.01, 0.015, 0.02, 0.03))
+argus <- list(method = "nnet", trace = FALSE, maxit = 10000, 
+              linout = ifelse(model == "Awin", FALSE, TRUE))
 
 # (9) Artificial Neural Network w/ 3 hidden layers
-my.nnet3 <- caret::train(form, data = modelData, method = 'mlpWeightDecayML', 
-                  trControl = ctrl, trace = FALSE, maxit = 10000,
-                  tuneGrid = expand.grid(layer1 = c(3, 5, 7),
-                                         layer2 = c(0, 3, 5, 7),
-                                         layer3 = c(0, 3, 5, 7),
-                                         decay = c(0.001, 0.005, 0.01, 0.015, 0.02)),
-                  linout = ifelse(model == "Awin", FALSE, TRUE))
+inputs <- expand.grid(layer1 = c(3, 5, 7),
+                      layer2 = c(0, 1, 3, 5, 7),
+                      layer3 = c(0, 1, 3, 5, 7),
+                      decay = c(0.001, 0.005, 0.01, 0.015, 0.02))
+argus <- list(method = 'mlpWeightDecayML', trace = FALSE, maxit = 10000,
+              linout = ifelse(model == "Awin", FALSE, TRUE))
 
 # (10) Neural Network with Feature Extraction
-my.nnetf <- caret::train(form, data = modelData, method = 'pcaNNet', 
-                         trControl = ctrl, trace = FALSE, maxit = 10000,
-                         tuneGrid = expand.grid(size = c(3, 5, 8, 10, 12, 15, 16),
-                                                decay = c(0.0001, 0.0005, 0.001, 0.003, 0.004, 0.005)),
-                         linout = ifelse(model == "Awin", FALSE, TRUE))
+inputs <- expand.grid(size = c(3, 5, 8, 10, 12, 15, 16),
+                      decay = c(0.0001, 0.0005, 0.001, 0.003, 0.004, 0.005))
+argus <- list(method = 'pcaNNet', maxit = 10000, 
+              linout = ifelse(model == "Awin", FALSE, TRUE))
 
-# (11) Support Vector Machine (SVM)
-# For final run try kernal = c("sigmoid", "radial"), 
-# gamma = c(1/ncol(modelData), seq(0.005, 0.05, by = 0.005)), cost = seq(0.50, 2, by = 0.50)
-my.svm <- caret::train(form, data = modelData, method = 'svmRadialCost', 
-                       trControl = ctrl,
-                       tuneGrid = expand.grid(C = c(0.1, 0.30, 0.40, 0.50, 0.60, 0.70, 1, 
-                                                    2, 2.5, 2.75, 3, 3.25, 3.5)))
+# (11) Radial Support Vector Machine (SVM)
+inputs <- expand.grid(C = c(0.1, 0.30, 0.40, 0.50, 0.60, 0.70, 1, 
+                            2, 2.5, 2.75, 3, 3.25, 3.5), tol = 0.001)
+argus <- list(method = 'svmRadialCost')
+
+nInputs <- nrow(inputs)
+detectCores()
+ncores <- 24
+cl <- makeCluster(ncores)
+registerDoParallel(cl)
+
+#Run in parallel
+res <- foreach(iter = 1:nInputs) %dopar% {
+  
+  # Supplying conditional and unconditional arguments
+  my.model <- do.call(FUN = caret::train, c(list(form = form, data = modelData, 
+                                                 trControl = ctrl, method = argus$method,
+                                                 tuneGrid = inputs[iter, ]),
+                 list(distribution = argus$distribution)[!is.null(argus$distribution)],
+                 list(trace = argus$trace)[!is.null(argus$trace)],
+                 list(maxit = argus$maxit)[!is.null(argus$maxit)],
+                 list(linout = argus$linout)[!is.null(argus$linout)]))
+  
+my.model <- caret::train(form = form, data = modelData,
+                         trControl = ctrl, 
+                         tuneGrid = inputs[iter, ])
+return(my.model)
+}
+stopCluster(cl)
+
+# Selecting optimal model
+my.model <- res[[which.max(sapply(res, FUN = function(x) {x$results$Rsquared}))]]
 
 # Function for obtaining predicted probabilities
 predCalc <- function(modelData = modelData.test, designMat = designMat.test) {
   
-  treePreds <- predict(my.tree, modelData)
-  prunedPreds <- predict(my.tree.pruned, modelData)
-  rfPreds <- predict(my.rf, newdata = modelData, 
-                     type = ifelse(model == "Awin", "prob", "raw"))
-  boostPreds <- predict(my.boost, modelData, 
+  myPreds <- predict(my.model, modelData, 
                         type = ifelse(model == "Awin", "prob", "raw"))
-  nnetPreds <- predict(my.nnet, modelData, 
-                       type = ifelse(model == "Awin", "prob", "raw"))
-  nnet3Preds <- predict(my.nnet3, modelData, 
-                        type = ifelse(model == "Awin", "prob", "raw"))
-  nnetfPreds <- predict(my.nnetf, modelData, 
-                        type = ifelse(model == "Awin", "prob", "raw"))
-  svmPreds <- predict(my.svm, modelData, 
-                      type = ifelse(model == "Awin", "prob", "raw"))
-  cvglmPreds <- predict(cvglmFit, newx = designMat, 
-                        s = "lambda.min", type = "response")
-  pcrPreds <- predict(pcrFit, newdata = modelData, ncomp = ncomps, type = "response")
-  ldaPreds <- predict(ldaFit, newdata = modelData)$posterior
   
-  return(setNames(list(treePreds, prunedPreds, rfPreds, boostPreds, 
-                       nnetPreds, nnet3Preds, nnetfPreds, svmPreds, 
-                       cvglmPreds, pcrPreds, ldaPreds), 
-                  c("Full Tree", 'Pruned Tree', 
-                                    "Random Forest", 'Grad Boost', 
-                                    "NNet", "NNet3", "NNetF",
-                                    "SVM Radial",
-                                    "CV glmnet", "PCR", "LDA")))
+  return(setNames(list(myPreds), 
+                  c(argus$method)))
 }
 
 # Preventing extrememe predictions. Need to tune thresh for final preds
@@ -244,10 +241,8 @@ predSummary <- function(preds, response,
 results <- do.call("rbind", mapply(FUN = predSummary, preds = predList, 
                                    response = model, SIMPLIFY = FALSE))
 
-xtable::xtable(results, digits = 4)
-
 # Saving results
-saveRDS(results, paste0(model, "_Tr", trainSize, "_Seed", seed, ".rds"))
+saveRDS(list(results, my.boost), paste0("Runs/", model, "_Tr", trainSize, "_Seed", seed, "_2.rds"))
 
 # Available models fit using caret package:
 #http://topepo.github.io/caret/train-models-by-tag.html
@@ -257,128 +252,3 @@ saveRDS(results, paste0(model, "_Tr", trainSize, "_Seed", seed, ".rds"))
 
 # Previous winners
 #https://storage.googleapis.com/kaggle-forum-message-attachments/473390/11340/Perennial%20Favories%202014-2018.png
-
-
-# Summarizing performances ------------------------------------------------
-library(tidyverse)
-
-perfResults <- list.files("Runs/") %>% str_subset("Seed") %>% 
-  map_dfr(.f = function(x) {readRDS(paste0("Runs/", x))[[1]]})
-
-models <- list.files("Runs/") %>% str_subset("Seed") %>% 
-  map(.f = function(x) {temp <- readRDS(paste0("Runs/", x));
-  return(temp[2:length(temp)])}) %>% unlist(recursive = FALSE)
-
-mNames <- map(.x = models, .f = function(x) {ifelse(is.null(unlist(x["method"])), "Unsure",
-                                                       x["method"])}) %>% unlist() %>% 
-  recode(rf = "Random Forest", svdpc = "PCR", gbm = "Grad Boost", nnet = "NNet",
-         pcaNNet = "NNetF", svmRadialCost = "SVM Radial")
-
-mNames[c(1:2, 4, 6)] <- c("Full Tree", 'Pruned Tree', "CV glmnet", "LDA")
-
-perfResults$Model <- mNames
-
-print(xtable::xtable(perfResults[, 
-                     colnames(perfResults)[c(ncol(perfResults), 
-                     1:(ncol(perfResults)-1))]], digits = 4), include.rownames = FALSE)
-
-
-
-# Simpler Modeling --------------------------------------------------------
-
-# Reading in Kaggle data
-massey <- read.csv("Kaggle Data/MasseyOrdinals/MasseyOrdinals.csv") %>% 
-  rename(DayNum = RankingDayNum)
-gameRes <- read.csv("Kaggle Data/DataFiles/RegularSeasonCompactResults.csv") %>% 
-  filter(Season %in% 2010:2018)
-locData <- read.csv("Kaggle Data/CitiesEnriched.csv") %>% dplyr::select(CityID, City, Lat, Lng) %>% 
-  left_join(read.csv("Kaggle Data/DataFiles/GameCities.csv"), by = c("CityID" = "CityID"))
-
-# Merging location and game data
-gameLoc <- left_join(gameRes, locData, by = c("Season" = "Season", "DayNum" = "DayNum",
-                                              "LTeamID" = "LTeamID", "WTeamID" = "WTeamID")) %>% 
-  dplyr::select(-CRType, -NumOT)
-
-# Converting massey data from long to wide format
-massey <- reshape(massey, idvar = c("Season", "DayNum", "TeamID"), 
-                  timevar = "SystemName", direction = "wide", 
-                  v.names = "OrdinalRank") %>% filter(Season >= 2010)
-
-# Adding MOV, Awin columns and recoding to have reference team
-combined <- gameRes %>% mutate(MOV = WScore - LScore, 
-                               refInd = ifelse(MOV %% 2 == 0, 1, 0),
-                               TeamA = ifelse(refInd == 1, WTeamID, LTeamID),
-                               TeamB = ifelse(refInd == 0, WTeamID, LTeamID),
-                               MOV = ifelse(refInd == 1, MOV, -MOV),
-                               Awin = as.integer(MOV > 0),
-                               WLoc = as.character(WLoc),
-                               Aloc = ifelse(refInd == 1, WLoc,
-                                             ifelse(WLoc == "H", "A", 
-                                                    ifelse(WLoc == "A", "H",
-                                                           "N")))) %>% 
-  dplyr::select(-c(WTeamID, LTeamID, WScore, LScore, WLoc, NumOT)) %>% 
-  dplyr::select(TeamA, TeamB, refInd, MOV, Awin, Aloc, everything())
-
-# Merging data sets
-combined <- combined %>% left_join(massey, by = c("Season" = "Season",
-                                                  "DayNum" = "DayNum",
-                                                  "TeamA" = "TeamID")) %>% 
-  left_join(massey, by = c("Season" = "Season",
-                           "DayNum" = "DayNum",
-                           "TeamB" = "TeamID"), suffix = c(".A", ".B"))
-
-# Columns to keep
-keepCols <- sapply(combined, FUN = function(x) {
-  sum(is.na(x))})[which(sapply(combined, FUN = function(x) {sum(is.na(x))
-  }) < 76075)] %>% names()
-combined <- combined[, keepCols]
-
-# Create vector of covariate column indices
-covCols <- str_split(keepCols, pattern = "[.]") %>% map(2) %>% 
-  map(.f = is.null) %>% unlist()
-
-# Make sure adjacent A/B rankings match
-sort(keepCols[!covCols])
-
-# Calculating massey ranking differences: TeamA - TeamB
-for(i in seq(1, (length(sort(keepCols[!covCols])) - 1), by = 2)) { 
-  c1 <- sort(keepCols[!covCols])[i]; 
-  c2 <- sort(keepCols[!covCols])[1 + i]; 
-  cname <- paste0(str_split(c1, pattern = "[.]") %>% 
-                    map(2), "diff"); 
-  combined[, cname] <- combined[, c1] - combined[, c2]
-}
-
-combined <- combined %>% dplyr::select(Season, DayNum, TeamA, TeamB, MOV, Awin, Aloc,
-                                POMdiff, SAGdiff, DOKdiff, MORdiff, PIGdiff) 
-combined$AvgRankDiff <- combined[, c("POMdiff", "SAGdiff", "DOKdiff", "MORdiff",
-                                     "PIGdiff")] %>% 
-  apply(FUN = mean, MARGIN = 1, na.rm = T)
-
-# Only keeping obs with AvgRankingDiff value
-combined <- combined %>% filter(!is.nan(AvgRankDiff))
-
-# Trying PCR, LDA, and random effects model
-form2 <- MOV ~ 0 + .
-form3 <- Awin ~ 0 + .
-pcrData <- combined[, c("MOV", "Aloc", "POMdiff", "SAGdiff", "DOKdiff",
-                        "MORdiff", "PIGdiff", "AvgRankDiff")]
-
-# Separating into training and test sets
-set.seed(1994)
-trainSize2 <- 0.80
-
-# Randomly selecting training set
-trInds2 <- sample(1:nrow(pcrData), replace = FALSE, 
-                  size = ceiling(trainSize2*nrow(pcrData)))
-# Training objects
-modelData2 <- modelDats[[model]][trInds2, ]
-designMat2 <- designMats[[model]][trInds2, ]
-
-# Test Objects
-modelData.test2 <- modelDats[[model]][-trInds2, ]
-designMat.test2 <- designMats[[model]][-trInds2, ]
-
-pcrFit2 <- pcr(form2, data = pcrData, validation = "CV", segments = 10)
-ldaFit2 <- lda(form3, data = modelData)
-
