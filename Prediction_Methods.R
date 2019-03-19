@@ -238,7 +238,7 @@ results <- do.call("rbind", mapply(FUN = predSummary, preds = predList,
                                    response = model, SIMPLIFY = FALSE))
 
 # Saving results
-saveRDS(list(results, my.boost), paste0("Runs/", model, "_", argus$method, 
+saveRDS(list(results, my.model), paste0("Runs/", model, "_", argus$method, 
                                         "_Tr", trainSize, "_Seed", seed, ".rds"))
 
 # Available models fit using caret package:
