@@ -163,10 +163,6 @@ res <- foreach(iter = 1:nInputs) %dopar% {
                  list(trace = argus$trace)[!is.null(argus$trace)],
                  list(maxit = argus$maxit)[!is.null(argus$maxit)],
                  list(linout = argus$linout)[!is.null(argus$linout)]))
-  
-my.model <- caret::train(form = form, data = modelData,
-                         trControl = ctrl, 
-                         tuneGrid = inputs[iter, ])
 return(my.model)
 }
 stopCluster(cl)
