@@ -50,8 +50,8 @@ designMats <- list(MOV = model.matrix(forms$MOV, data = modelDats$MOV),
 # Setting parameters ------------------------------------------------------
 
 # Should be one of 'MOV' or 'Awin'
-model <- "MOV"
-#model <- "Awin"
+#model <- "MOV"
+model <- "Awin"
 
 # Setting training size and seed
 seed <- 1994
@@ -191,13 +191,14 @@ predCalc <- function(modelData = modelData.test, designMat = designMat.test) {
 capper <- function(x, thresh = 0.01){
   if(is.null(dim(x)) == FALSE) {if(dim(x)[2] == 2) {x <- x[, 2]}}
   for(i in 1:length(x)) {
-    x[i] <- ifelse(x[i] < thresh, thresh, ifelse(x[i] > 1-thresh, 1-thresh, x[i]))
+    x[i] <- ifelse(is.na(x[i]), NA, ifelse(x[i] < thresh, thresh, 
+                   ifelse(x[i] > 1-thresh, 1-thresh, x[i])))
   }
   return(as.numeric(x))
 }
 
 if(model == "MOV") {
-  # Obtaining predicted probs for trainging data set
+  # Obtaining predicted probs for training data set
   trPreds <- predCalc(modelData = modelData, designMat = designMat)
   
   # Estimating custom conversion between MOV and win probability using training data
@@ -274,7 +275,7 @@ mNames <- map(.x = models, .f = function(x) {ifelse(is.null(unlist(x["method"]))
   recode(rf = "Random Forest", svdpc = "PCR", gbm = "Grad Boost", nnet = "NNet",
          pcaNNet = "NNetF", svmRadialCost = "SVM Radial")
 
-mNames[c(1:2, 4, 6)] <- c("Full Tree", 'Pruned Tree', "CV glmnet", "LDA")
+mNames[c(1:2, 4, 6, 11:12, 14, 16)] <- rep(c("Full Tree", 'Pruned Tree', "CV glmnet", "LDA"), 2)
 
 perfResults$Model <- mNames
 
@@ -282,7 +283,137 @@ print(xtable::xtable(perfResults[,
                      colnames(perfResults)[c(ncol(perfResults), 
                      1:(ncol(perfResults)-1))]], digits = 4), include.rownames = FALSE)
 
+# Final Predictions -------------------------------------------------------
 
+library(tidyverse)
+
+# Preventing extrememe predictions. Need to tune thresh for final preds
+capper <- function(x, thresh = 0.01){
+  if(is.null(dim(x)) == FALSE) {if(dim(x)[2] == 2) {x <- x[, 2]}}
+  for(i in 1:length(x)) {
+    x[i] <- ifelse(is.na(x[i]), NA, ifelse(x[i] < thresh, thresh, 
+                                           ifelse(x[i] > 1-thresh, 1-thresh, x[i])))
+  }
+  return(as.numeric(x))
+}
+
+# Reading in design matrix for final predicitons
+subA <- read.csv("SubmissionFiles/SubmissionFileA.csv")
+subB <- read.csv("SubmissionFiles/SubmissionFileB.csv")
+finalDesign <- readRDS("SubmissionFiles/tournamentGames2019.rds")
+
+# Cleaning submission files
+subA <- subA %>% select(-X) %>% rename(id = ID, pred = Pred) %>% 
+  mutate(pred = 0.50)
+subB <- subB %>% select(-X) %>% rename(id = ID, pred = Pred) %>% 
+  mutate(pred = 0.50)
+
+# Whether to manually fix some probs to 0/1
+manual <- FALSE
+
+if(manual == TRUE) {
+# Setting 1 vs 16 seed games manually
+teamA <- c("1233", "1205", "1181", "1181", "1192", "1211")
+teamB <- c("1314", "1438", "1300", "1295", "1211", "1341")
+probs <- c(1, 1, 0, 0, 1, 0)
+aInds <- which(subA$id %in% paste0("2019_", teamA, "_", teamB))
+bInds <- which(subB$id %in% paste0("2019_", teamA, "_", teamB))
+subA[aInds, "pred"] <- probs
+subB[bInds, "pred"] <- probs
+
+# Setting all possible championship games manually
+roundData <- read.csv("Kaggle Data/Stage2/NCAATourneySeedRoundSlots.csv") %>% 
+  filter(GameRound == 6)
+seedData <- read.csv("Kaggle Data/Stage2/NCAATourneySeeds.csv") %>% 
+  filter(Season == 2019) %>% select(-Season)
+
+# Unique combinations and obtaining teamID for each seedID
+champGames <- expand.grid(t1 = roundData$Seed, t2 = roundData$Seed) %>% 
+  filter(substring(t1, 1, 1) == "Y" & substring(t2, 1, 1) == "W" |
+         substring(t1, 1, 1) == "Y" & substring(t2, 1, 1) == "X" |
+         substring(t1, 1, 1) == "Z" & substring(t2, 1, 1) == "W" |
+         substring(t1, 1, 1) == "Z" & substring(t2, 1, 1) == "X" |
+         substring(t1, 1, 1) == "X" & substring(t2, 1, 1) == "Y" |
+         substring(t1, 1, 1) == "X" & substring(t2, 1, 1) == "Z" |
+         substring(t1, 1, 1) == "W" & substring(t2, 1, 1) == "Y" |
+         substring(t1, 1, 1) == "W" & substring(t2, 1, 1) == "Z") %>% 
+  left_join(seedData, by = c("t1" = "Seed")) %>% 
+  left_join(seedData, by = c("t2" = "Seed"))
+champGames <- champGames[complete.cases(champGames), ] %>% 
+  filter(TeamID.x < TeamID.y)
+
+acInds <- which(subA$id %in% paste0("2019_", champGames$TeamID.x, 
+                                   "_", champGames$TeamID.y))
+bcInds <- which(subB$id %in% paste0("2019_", champGames$TeamID.x, 
+                                    "_", champGames$TeamID.y))
+subA[acInds, "pred"] <- 1
+subB[bcInds, "pred"] <- 0
+}
+
+# Centering and scaling design matrix
+Aloc <- finalDesign$Aloc
+finalDesign <- as.data.frame(lapply(finalDesign, FUN = scale, center = TRUE,
+                      scale = TRUE))
+finalDesign$Aloc <- Aloc
+
+# Renaming outcome column
+colnames(finalDesign)[which(colnames(finalDesign) == "Awin")] <- "outcome"
+
+# Rearranging columns
+newDatFormat <- readRDS("SubmissionFiles/newDatFormat.rds")
+finalDesign <- finalDesign[, colnames(newDatFormat)]
+
+# Switching which team is A and B
+colnames(finalDesign)[which(colnames(finalDesign) != "Aloc")] <- colnames(finalDesign)[which(colnames(finalDesign) != "Aloc")] %>% 
+  gsub(pattern = "AstRatio", replacement = "astratio") %>% 
+  gsub(pattern = "A", replacement = "xxx") %>% 
+  gsub(pattern = "B", replacement = "A") %>% 
+  gsub(pattern = "xxx", replacement = "B") %>% 
+gsub(pattern = "astratio", replacement = "AstRatio")
+
+# Recoding Aloc as factor
+finalDesign$Aloc <- factor(finalDesign$Aloc, 
+                           levels = levels(newDatFormat$Aloc))
+
+# Reading in best model fits
+models <- list.files("Runs/") %>% str_subset("Seed") %>% 
+  map(.f = function(x) {temp <- readRDS(paste0("Runs/", x));
+  return(temp[2:length(temp)])}) %>% unlist(recursive = FALSE)
+
+mNames <- map(.x = models, .f = function(x) {ifelse(is.null(unlist(x["method"])), "Unsure",
+                                                    x["method"])}) %>% unlist() %>% 
+  recode(rf = "Random Forest", svdpc = "PCR", gbm = "Grad Boost", nnet = "NNet",
+         pcaNNet = "NNetF", svmRadialCost = "SVM Radial")
+
+mNames[c(1:2, 4, 6, 11:12, 14, 16)] <- rep(c("Full Tree", 'Pruned Tree', "CV glmnet", "LDA"), 2)
+names(models) <- mNames
+
+# Selecting our optimal model
+modelNum <- 6
+finalModel <- models[[modelNum]]
+
+# Obtaining predictions and saving
+finalPreds <- capper(predict(finalModel, newdata = finalDesign)$posterior)
+#finalPreds <- capper(predict(finalModel, finalDesign, type = "prob"))
+
+# Only replacing non-certain games with predictions
+subA[which(!(subA$pred %in% c(0, 1))), 
+     "pred"] <- finalPreds[which(!(subA$pred %in% c(0, 1)))]
+subB[which(!(subB$pred %in% c(0, 1))), 
+     "pred"] <- finalPreds[which(!(subB$pred %in% c(0, 1)))]
+
+if(manual == TRUE) {
+write.csv(subA, file = paste0("SubmissionFiles/Submission", 
+                              mNames[modelNum], "AStage2.csv"), 
+          row.names = FALSE)
+write.csv(subB, file = paste0("SubmissionFiles/Submission", 
+                              mNames[modelNum], "BStage2.csv"), 
+          row.names = FALSE)
+} else {
+  write.csv(subA, file = paste0("SubmissionFiles/Submission", 
+                                mNames[modelNum], "Stage2.csv"), 
+            row.names = FALSE)
+}
 
 # Simpler Modeling --------------------------------------------------------
 
