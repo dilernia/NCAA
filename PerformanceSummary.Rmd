@@ -1,0 +1,212 @@
+---
+title: "NCAA Prediction Summary"
+author: ""
+date: "March 15, 2019"
+output: pdf_document
+header-includes:
+   - \usepackage{theorem}
+   - \usepackage{relsize}
+   - \usepackage{scalerel}
+   - \usepackage{bbm}
+   - \usepackage{amsmath}
+   - \usepackage{float}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      engine.path=paste0('C:/Users/', Sys.info()["user"], '/AppData/Local/Programs/Python/Python37/python'))
+```
+
+\begin{table}[H]
+\centering
+\caption{Performance using $80\%$ for training, full data, seed = 1994}
+\begin{tabular}{lrrrrrl}
+  \hline
+Model & Misclassification Rate & Mean Squared Error & Sensitivity & Specificity & Log Loss & Response \\ 
+   \hline
+Full Tree & 0.3178 & 0.2061 & 0.7117 & 0.6508 & 0.5979 & Win/Loss \\ 
+  Pruned Tree & 0.3178 & 0.2087 & 0.7117 & 0.6508 & 0.6052 & Win/Loss \\ 
+  Random Forest & 0.2794 & 0.1841 & 0.7472 & 0.6923 & 0.5450 & Win/Loss \\ 
+  CV glmnet & 0.2861 & 0.1872 & 0.8326 & 0.5875 & 0.5514 & Win/Loss \\ 
+  PCR & 0.2735 & 0.1810 & 0.7538 & 0.6974 & 0.5370 & Win/Loss \\ 
+  LDA & 0.2737 & 0.1798 & 0.7537 & 0.6973 & 0.5330 & Win/Loss \\ 
+  Grad Boost & 0.2775 & 0.1801 & 0.7499 & 0.6934 & 0.5332 & Win/Loss \\ 
+  NNet & 0.2743 & 0.1803 & 0.7550 & 0.6946 & 0.5340 & Win/Loss \\ 
+  NNetF & 0.2838 & 0.1843 & 0.7381 & 0.6928 & 0.5443 & Win/Loss \\ 
+  SVM Radial &  &  &  &  &  & Win/Loss \\ 
+  Full Tree & 0.3177 & 0.2076 & 0.7106 & 0.6522 & 0.6008 & MOV \\ 
+  Pruned Tree & 0.3390 & 0.2111 & 0.5745 & 0.7531 & 0.6080 & MOV \\ 
+  Random Forest & 0.2752 & 0.1873 & 0.7312 & 0.7180 & 0.5640 & MOV \\ 
+  CV glmnet & 0.2828 & 0.1859 & 0.8192 & 0.6087 & 0.5482 & MOV \\ 
+  PCR & 0.2745 & 0.1806 & 0.7302 & 0.7206 & 0.5363 & MOV \\ 
+  LDA & 0.2847 & 0.1872 & 0.8130 & 0.6113 & 0.5530 & MOV \\ 
+  Grad Boost & 0.2755 & 0.1804 & 0.7311 & 0.7176 & 0.5354 & MOV \\ 
+  NNet & 0.2764 & 0.1810 & 0.7256 & 0.7214 & 0.5369 & MOV \\ 
+  NNetF & 0.2809 & 0.1848 & 0.7254 & 0.7124 & 0.5468 & MOV \\ 
+  SVM Radial & 0.2760 & 0.1808 & 0.7356 & 0.7116 & 0.5364 & MOV \\ 
+   \hline
+\end{tabular}
+\end{table}
+
+\newpage
+
+## MOV
+
+\begin{table}[H]
+\centering
+\caption{Performance using $1\%$ for training, full data, seed = 1994}
+\begin{tabular}{rrrrrrl}
+  \hline
+ Model & Misclassification Rate & Mean Squared Error & Sensitivity & Specificity & Log Loss & Response \\ 
+  \hline
+Full Tree & 0.3265 & 0.2095 & 0.7712 & 0.5693 & 0.6083 & MOV \\ 
+  Pruned Tree & 0.3639 & 0.2118 & 0.6793 & 0.5900 & 0.6086 & MOV \\ 
+  Random Forest & 0.2861 & 0.1981 & 0.7433 & 0.6825 & 0.6082 & MOV \\ 
+  Grad Boost & 0.2804 & 0.1835 & 0.7324 & 0.7060 & 0.5427 & MOV \\ 
+  NNet & 0.3757 & 0.2940 & 0.6217 & 0.6270 & 1.0316 & MOV \\ 
+  NNet3 & 0.4841 & 0.2424 & 1.0000 & 0.0000 & 0.6783 & MOV \\ 
+  NNetF & 0.3718 & 0.2939 & 0.6348 & 0.6211 & 1.0426 & MOV \\ 
+  SVM Radial & 0.2845 & 0.1869 & 0.7392 & 0.6902 & 0.5526 & MOV \\ 
+  CV glmnet & 0.2948 & 0.1934 & 0.7721 & 0.6339 & 0.5700 & MOV \\ 
+  PCR & 0.2810 & 0.1844 & 0.7207 & 0.7172 & 0.5459 & MOV \\ 
+  LDA & 0.3082 & 0.2080 & 0.7845 & 0.5931 & 0.6300 & MOV \\ 
+   \hline
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Performance using $1\%$ for training, full data, seed = 2000}
+\begin{tabular}{rrrrrrl}
+  \hline
+ Model & Misclassification Rate & Mean Squared Error & Sensitivity & Specificity & Log Loss & Response \\ 
+  \hline
+Full Tree & 0.3325 & 0.2121 & 0.6775 & 0.6569 & 0.6122 & MOV \\ 
+  Pruned Tree & 0.3372 & 0.2123 & 0.6970 & 0.6262 & 0.6109 & MOV \\ 
+  Random Forest & 0.2916 & 0.1935 & 0.7040 & 0.7130 & 0.5750 & MOV \\ 
+  Grad Boost & 0.2840 & 0.1850 & 0.7174 & 0.7146 & 0.5469 & MOV \\ 
+  NNet & 0.3062 & 0.2056 & 0.7153 & 0.6709 & 0.6015 & MOV \\ 
+  SVM Radial & 0.2869 & 0.1867 & 0.7287 & 0.6965 & 0.5513 & MOV \\ 
+  CV glmnet & 0.3181 & 0.2007 & 0.7987 & 0.5574 & 0.5840 & MOV \\ 
+  PCR & 0.2778 & 0.1830 & 0.7198 & 0.7247 & 0.5434 & MOV \\ 
+  LDA & 0.3078 & 0.2054 & 0.7762 & 0.6026 & 0.6275 & MOV \\ 
+   \hline
+\end{tabular}
+\end{table}
+
+## Win/Loss
+
+\begin{table}[H]
+\centering
+\caption{Performance using $1\%$ for training, full data, seed = 1994}
+\begin{tabular}{rrrrrrl}
+  \hline
+ & Misclassification Rate & Mean Squared Error & Sensitivity & Specificity & Log Loss & Response \\ 
+  \hline
+Full Tree & 0.3311 & 0.2367 & 0.6795 & 0.6576 & 0.7749 & Win/Loss \\ 
+  Pruned Tree & 0.3359 & 0.2142 & 0.7750 & 0.5459 & 0.6296 & Win/Loss \\ 
+  Random Forest & 0.2914 & 0.1922 & 0.7716 & 0.6415 & 0.5667 & Win/Loss \\ 
+  Grad Boost & 0.3105 & 0.2056 & 0.7187 & 0.6583 & 0.6071 & Win/Loss \\ 
+  NNet & 0.3257 & 0.2458 & 0.7276 & 0.6176 & 0.8135 & Win/Loss \\ 
+  NNet3 & 0.5159 & 0.2512 & 0.0000 & 1.0000 & 0.6956 & Win/Loss \\ 
+  NNetF & 0.3566 & 0.3274 & 0.6662 & 0.6192 & 1.4235 & Win/Loss \\ 
+  SVM Radial & 0.2835 & 0.1863 & 0.7584 & 0.6719 & 0.5513 & Win/Loss \\ 
+  CV glmnet & 0.2943 & 0.1934 & 0.8092 & 0.5953 & 0.5713 & Win/Loss \\ 
+  PCR & 0.2928 & 0.1911 & 0.7368 & 0.6756 & 0.5726 & Win/Loss \\ 
+  LDA & 0.2930 & 0.1936 & 0.7371 & 0.6749 & 0.5739 & Win/Loss \\ 
+   \hline
+\end{tabular}
+\end{table}
+
+```{python, echo = FALSE}
+from bracketeer import build_bracket
+a = build_bracket(
+        outputPath='bracketA.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionAStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+b = build_bracket(
+        outputPath='bracketB.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionBStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+LDAa = build_bracket(
+        outputPath='bracketLDAA.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionLDAAStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+LDAb = build_bracket(
+        outputPath='bracketLDAB.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionLDABStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+GBa = build_bracket(
+        outputPath='bracketGrad BoostA.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionGrad BoostAStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+GBb = build_bracket(
+        outputPath='bracketGrad BoostB.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionGrad BoostBStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+NNa = build_bracket(
+        outputPath='bracketNNetA.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionNNetAStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+NNb = build_bracket(
+        outputPath='bracketNNetB.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionNNetBStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+lda = build_bracket(
+        outputPath='bracketLDA.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionLDAStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+nn = build_bracket(
+        outputPath='bracketNNet.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionNNetStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+gb = build_bracket(
+        outputPath='bracketGB.png',
+        teamsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/Teams.csv',
+        seedsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySeeds.csv',
+        submissionPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/SubmissionFiles/SubmissionGrad BoostStage2.csv',
+        slotsPath='C:/Users/goblu/Google Drive/Other/Fun/March Madness/Kaggle Data/Stage2/NCAATourneySlots.csv',
+        year=2019
+)
+```
+
