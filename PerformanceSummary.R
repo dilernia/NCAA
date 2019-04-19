@@ -67,8 +67,16 @@ models <- list.files("Runs/") %>% str_subset("Seed") %>%
   map(.f = function(x) {temp <- readRDS(paste0("Runs/", x));
   return(temp[2:length(temp)])}) %>% unlist(recursive = FALSE)
 
-# Naming models
+# Loading or Saving performance results
+#saveRDS(perfResults, "perfResults.rds")
+if(file.exists("perfResults.rds")) {
 perfResults <- readRDS("perfResults.rds")
+} else {
+perfResults <- list.files("Runs/") %>% str_subset("Seed") %>% 
+  map_dfr(.f = function(x) {readRDS(paste0("Runs/", x))[[1]]})
+}
+
+# Naming models
 names(models) <- perfResults$Model
 
 # Creating separate model lists by outcome
@@ -171,6 +179,8 @@ results <- do.call("rbind", mapply(FUN = predSummary, preds = predList,
 
 xtable::xtable(results, digits = 4)
 
+saveRDS(results, paste0("results_", model, "_.rds"))
+
 # Obtaining Final Predictions -------------------------------------------------------
 
 # Reading in design matrix for final predicitons
@@ -224,8 +234,8 @@ fpredList <- lapply(fpredList, FUN = capper)
 
 # Reading in and cleaning tournament results ------------------------------
 
-# Reading in actual tournament game outcomes
-tourn19 <- readxl::read_excel("NCAA_Tourn_Results19.xlsx") %>% select(School, Opponent, Diff) %>% 
+# Reading in actual tournament game outcomes and excluding play-ins
+tourn19 <- readxl::read_excel("NCAA_Tourn_Results19.xlsx") %>% filter(Round != "First Four") %>% select(School, Opponent, Diff) %>% 
   rename(TeamW = School, TeamL = Opponent, MOV = Diff)
 
 # Cleaning team names
@@ -259,3 +269,72 @@ f.results <- do.call("rbind", lapply(FUN = predSummary, X = trimFpredList,
 
 xtable::xtable(f.results, digits = 4)
 saveRDS(f.results, paste0("f.results_", model, "_.rds"))
+
+# Reading in and cleaning final results for slides
+f.resultsMOV <- readRDS(paste0("f.results_", "MOV", "_.rds"))
+f.resultsAwin <- readRDS(paste0("f.results_", "Awin", "_.rds"))
+
+f.resultsMOV$Model <- rownames(f.resultsMOV)
+f.resultsMOV <- f.resultsMOV %>% arrange(Log.Loss) %>% 
+  select(Model, Misclassification.Rate, Log.Loss)
+xtable::xtable(f.resultsMOV, digits = 4)
+
+f.resultsAwin$Model <- rownames(f.resultsAwin)
+f.resultsAwin <- f.resultsAwin %>% arrange(Log.Loss) %>% 
+  select(Model, Misclassification.Rate, Log.Loss)
+xtable::xtable(f.resultsAwin, digits = 4)
+
+# Kaggle Competition Summary ----------------------------------------------
+
+kaggleRes <- readxl::read_excel("Kaggle_Team_Results.xlsx") %>% 
+  select(`Team Name`, Score, `#`) %>% 
+  rename(Team = `Team Name`, LogLoss = Score, Rank = `#`) %>% 
+  mutate(Model = "Other Kagglers", Response = "Other Kagglers")
+
+aggRes <- rbind(cbind(f.resultsMOV, data.frame(Response = rep("MOV", nrow(f.resultsMOV)))), 
+                cbind(f.resultsAwin, data.frame(Response = rep("Win/Loss", nrow(f.resultsAwin))))) %>% 
+  arrange(Log.Loss)
+
+# Combining kaggle competition data and our model results
+temp <- aggRes %>% select(Log.Loss, Model, Response) %>% 
+  rename(LogLoss = Log.Loss) %>% mutate(Team = NA, Rank = NA) %>% 
+  select(Team, LogLoss, Rank, Model, Response)
+
+combined <- rbind(kaggleRes, temp) %>% arrange(LogLoss)
+combined$Rank <- 1:nrow(combined)
+
+# Creating bar chart
+if(is.factor(aggRes$Model) == FALSE) {
+aggRes$Model <- factor(aggRes$Model, 
+                        levels = rev(unique(aggRes$Model)))
+}
+
+
+ggBars <- aggRes %>% ggplot(aes(x = Model, y = Log.Loss, fill = Response)) +
+  geom_bar(stat="identity",position="dodge")+
+  scale_fill_manual(values = c("firebrick2", "skyblue")) +
+  labs(title = "Performance for 2019 NCAA Tournament", y = "Log Loss", x = "") +
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5)) + coord_flip()
+ggBars
+ggsave(ggBars, filename = "barPlot.pdf", device = cairo_pdf)
+
+# Plotting points 
+if(is.factor(combined$Response) == FALSE) {
+combined$Response <- factor(combined$Response, levels = c("Win/Loss", "MOV", "Other Kagglers"))
+}
+minRank <- 800
+ggPoints <- combined %>% filter(Rank <= minRank) %>% ggplot(aes(x = Rank, y = LogLoss, color = Response)) +
+  geom_point()  + 
+  geom_point(data = combined %>% filter(Response != "Other Kagglers", Rank <= minRank)) +
+  scale_color_manual(values = c("skyblue", "firebrick2", "black"), name = "Model") +
+  geom_hline(yintercept = 0.69314, linetype = 2) +
+  labs(title = "NCAA Kaggle Competition 2019", y = "Log Loss") +
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5)) +
+  coord_cartesian(xlim = c(1, minRank), # This focuses the x-axis on the range of interest
+                  ylim = c(0.40, 1), clip = 'off') +
+  annotate(geom = "segment", x = 750, xend = 800, yend = 0.25,
+           y = 0.25, color = "black", linetype = "dashed") +
+  annotate(geom = "text", x = c(955), 
+           y = c(0.25), label = ": naive model")
+ggPoints
+ggsave(ggPoints, filename = "pointsPlot.pdf", device = cairo_pdf)
