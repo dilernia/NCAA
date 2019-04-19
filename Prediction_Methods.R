@@ -50,8 +50,8 @@ designMats <- list(MOV = model.matrix(forms$MOV, data = modelDats$MOV),
 # Setting parameters ------------------------------------------------------
 
 # Should be one of 'MOV' or 'Awin'
-#model <- "MOV"
-model <- "Awin"
+model <- "MOV"
+#model <- "Awin"
 
 # Setting training size and seed
 seed <- 1994
@@ -133,12 +133,12 @@ my.nnet <- caret::train(form, data = modelData, method = "nnet",
 
 # (9) Artificial Neural Network w/ 3 hidden layers
 my.nnet3 <- caret::train(form, data = modelData, method = 'mlpWeightDecayML', 
-                  trControl = ctrl, trace = FALSE, maxit = 10000,
-                  tuneGrid = expand.grid(layer1 = c(3, 5, 7),
-                                         layer2 = c(0, 3, 5, 7),
-                                         layer3 = c(0, 3, 5, 7),
-                                         decay = c(0.001, 0.005, 0.01, 0.015, 0.02)),
-                  linout = ifelse(model == "Awin", FALSE, TRUE))
+                         trControl = ctrl, trace = FALSE, maxit = 10000,
+                         tuneGrid = expand.grid(layer1 = c(3, 5, 7),
+                                                layer2 = c(0, 3, 5, 7),
+                                                layer3 = c(0, 3, 5, 7),
+                                                decay = c(0.001, 0.005, 0.01, 0.015, 0.02)),
+                         linout = ifelse(model == "Awin", FALSE, TRUE))
 
 # (10) Neural Network with Feature Extraction
 my.nnetf <- caret::train(form, data = modelData, method = 'pcaNNet', 
@@ -181,18 +181,18 @@ predCalc <- function(modelData = modelData.test, designMat = designMat.test) {
                        nnetPreds, nnet3Preds, nnetfPreds, svmPreds, 
                        cvglmPreds, pcrPreds, ldaPreds), 
                   c("Full Tree", 'Pruned Tree', 
-                                    "Random Forest", 'Grad Boost', 
-                                    "NNet", "NNet3", "NNetF",
-                                    "SVM Radial",
-                                    "CV glmnet", "PCR", "LDA")))
+                    "Random Forest", 'Grad Boost', 
+                    "NNet", "NNet3", "NNetF",
+                    "SVM Radial",
+                    "CV glmnet", "PCR", "LDA")))
 }
 
-# Preventing extrememe predictions. Need to tune thresh for final preds
+# Preventing extreme predictions. Need to tune thresh for final preds
 capper <- function(x, thresh = 0.01){
   if(is.null(dim(x)) == FALSE) {if(dim(x)[2] == 2) {x <- x[, 2]}}
   for(i in 1:length(x)) {
     x[i] <- ifelse(is.na(x[i]), NA, ifelse(x[i] < thresh, thresh, 
-                   ifelse(x[i] > 1-thresh, 1-thresh, x[i])))
+                                           ifelse(x[i] > 1-thresh, 1-thresh, x[i])))
   }
   return(as.numeric(x))
 }
@@ -208,6 +208,9 @@ if(model == "MOV") {
                                                  movHat = MOVhats), family = "binomial")
     return(fit)
   }, X = trPreds)
+  
+  # Saving conversion fits
+  saveRDS(converts, "convertFits.rds")
   
   # Converting from MOV to estimated win prob
   movList <- predCalc()
@@ -258,258 +261,3 @@ saveRDS(results, paste0(model, "_Tr", trainSize, "_Seed", seed, ".rds"))
 
 # Previous winners
 #https://storage.googleapis.com/kaggle-forum-message-attachments/473390/11340/Perennial%20Favories%202014-2018.png
-
-
-# Summarizing performances ------------------------------------------------
-library(tidyverse)
-
-perfResults <- list.files("Runs/") %>% str_subset("Seed") %>% 
-  map_dfr(.f = function(x) {readRDS(paste0("Runs/", x))[[1]]})
-
-models <- list.files("Runs/") %>% str_subset("Seed") %>% 
-  map(.f = function(x) {temp <- readRDS(paste0("Runs/", x));
-  return(temp[2:length(temp)])}) %>% unlist(recursive = FALSE)
-
-mNames <- map(.x = models, .f = function(x) {ifelse(is.null(unlist(x["method"])), "Unsure",
-                                                       x["method"])}) %>% unlist() %>% 
-  recode(rf = "Random Forest", svdpc = "PCR", gbm = "Grad Boost", nnet = "NNet",
-         pcaNNet = "NNetF", svmRadialCost = "SVM Radial")
-
-mNames[c(1:2, 4, 6, 11:12, 14, 16)] <- rep(c("Full Tree", 'Pruned Tree', "CV glmnet", "LDA"), 2)
-
-perfResults$Model <- mNames
-
-print(xtable::xtable(perfResults[, 
-                     colnames(perfResults)[c(ncol(perfResults), 
-                     1:(ncol(perfResults)-1))]], digits = 4), include.rownames = FALSE)
-
-# Final Predictions -------------------------------------------------------
-
-library(tidyverse)
-
-# Preventing extrememe predictions. Need to tune thresh for final preds
-capper <- function(x, thresh = 0.01){
-  if(is.null(dim(x)) == FALSE) {if(dim(x)[2] == 2) {x <- x[, 2]}}
-  for(i in 1:length(x)) {
-    x[i] <- ifelse(is.na(x[i]), NA, ifelse(x[i] < thresh, thresh, 
-                                           ifelse(x[i] > 1-thresh, 1-thresh, x[i])))
-  }
-  return(as.numeric(x))
-}
-
-# Reading in design matrix for final predicitons
-subA <- read.csv("SubmissionFiles/SubmissionFileA.csv")
-subB <- read.csv("SubmissionFiles/SubmissionFileB.csv")
-finalDesign <- readRDS("SubmissionFiles/tournamentGames2019.rds")
-
-# Cleaning submission files
-subA <- subA %>% select(-X) %>% rename(id = ID, pred = Pred) %>% 
-  mutate(pred = 0.50)
-subB <- subB %>% select(-X) %>% rename(id = ID, pred = Pred) %>% 
-  mutate(pred = 0.50)
-
-# Whether to manually fix some probs to 0/1
-manual <- FALSE
-
-if(manual == TRUE) {
-# Setting 1 vs 16 seed games manually
-teamA <- c("1233", "1205", "1181", "1181", "1192", "1211")
-teamB <- c("1314", "1438", "1300", "1295", "1211", "1341")
-probs <- c(1, 1, 0, 0, 1, 0)
-aInds <- which(subA$id %in% paste0("2019_", teamA, "_", teamB))
-bInds <- which(subB$id %in% paste0("2019_", teamA, "_", teamB))
-subA[aInds, "pred"] <- probs
-subB[bInds, "pred"] <- probs
-
-# Setting all possible championship games manually
-roundData <- read.csv("Kaggle Data/Stage2/NCAATourneySeedRoundSlots.csv") %>% 
-  filter(GameRound == 6)
-seedData <- read.csv("Kaggle Data/Stage2/NCAATourneySeeds.csv") %>% 
-  filter(Season == 2019) %>% select(-Season)
-
-# Unique combinations and obtaining teamID for each seedID
-champGames <- expand.grid(t1 = roundData$Seed, t2 = roundData$Seed) %>% 
-  filter(substring(t1, 1, 1) == "Y" & substring(t2, 1, 1) == "W" |
-         substring(t1, 1, 1) == "Y" & substring(t2, 1, 1) == "X" |
-         substring(t1, 1, 1) == "Z" & substring(t2, 1, 1) == "W" |
-         substring(t1, 1, 1) == "Z" & substring(t2, 1, 1) == "X" |
-         substring(t1, 1, 1) == "X" & substring(t2, 1, 1) == "Y" |
-         substring(t1, 1, 1) == "X" & substring(t2, 1, 1) == "Z" |
-         substring(t1, 1, 1) == "W" & substring(t2, 1, 1) == "Y" |
-         substring(t1, 1, 1) == "W" & substring(t2, 1, 1) == "Z") %>% 
-  left_join(seedData, by = c("t1" = "Seed")) %>% 
-  left_join(seedData, by = c("t2" = "Seed"))
-champGames <- champGames[complete.cases(champGames), ] %>% 
-  filter(TeamID.x < TeamID.y)
-
-acInds <- which(subA$id %in% paste0("2019_", champGames$TeamID.x, 
-                                   "_", champGames$TeamID.y))
-bcInds <- which(subB$id %in% paste0("2019_", champGames$TeamID.x, 
-                                    "_", champGames$TeamID.y))
-subA[acInds, "pred"] <- 1
-subB[bcInds, "pred"] <- 0
-}
-
-# Centering and scaling design matrix
-Aloc <- finalDesign$Aloc
-finalDesign <- as.data.frame(lapply(finalDesign, FUN = scale, center = TRUE,
-                      scale = TRUE))
-finalDesign$Aloc <- Aloc
-
-# Renaming outcome column
-colnames(finalDesign)[which(colnames(finalDesign) == "Awin")] <- "outcome"
-
-# Rearranging columns
-newDatFormat <- readRDS("SubmissionFiles/newDatFormat.rds")
-finalDesign <- finalDesign[, colnames(newDatFormat)]
-
-# Switching which team is A and B
-colnames(finalDesign)[which(colnames(finalDesign) != "Aloc")] <- colnames(finalDesign)[which(colnames(finalDesign) != "Aloc")] %>% 
-  gsub(pattern = "AstRatio", replacement = "astratio") %>% 
-  gsub(pattern = "A", replacement = "xxx") %>% 
-  gsub(pattern = "B", replacement = "A") %>% 
-  gsub(pattern = "xxx", replacement = "B") %>% 
-gsub(pattern = "astratio", replacement = "AstRatio")
-
-# Recoding Aloc as factor
-finalDesign$Aloc <- factor(finalDesign$Aloc, 
-                           levels = levels(newDatFormat$Aloc))
-
-# Reading in best model fits
-models <- list.files("Runs/") %>% str_subset("Seed") %>% 
-  map(.f = function(x) {temp <- readRDS(paste0("Runs/", x));
-  return(temp[2:length(temp)])}) %>% unlist(recursive = FALSE)
-
-mNames <- map(.x = models, .f = function(x) {ifelse(is.null(unlist(x["method"])), "Unsure",
-                                                    x["method"])}) %>% unlist() %>% 
-  recode(rf = "Random Forest", svdpc = "PCR", gbm = "Grad Boost", nnet = "NNet",
-         pcaNNet = "NNetF", svmRadialCost = "SVM Radial")
-
-mNames[c(1:2, 4, 6, 11:12, 14, 16)] <- rep(c("Full Tree", 'Pruned Tree', "CV glmnet", "LDA"), 2)
-names(models) <- mNames
-
-# Selecting our optimal model
-modelNum <- 6
-finalModel <- models[[modelNum]]
-
-# Obtaining predictions and saving
-finalPreds <- capper(predict(finalModel, newdata = finalDesign)$posterior)
-#finalPreds <- capper(predict(finalModel, finalDesign, type = "prob"))
-
-# Only replacing non-certain games with predictions
-subA[which(!(subA$pred %in% c(0, 1))), 
-     "pred"] <- finalPreds[which(!(subA$pred %in% c(0, 1)))]
-subB[which(!(subB$pred %in% c(0, 1))), 
-     "pred"] <- finalPreds[which(!(subB$pred %in% c(0, 1)))]
-
-if(manual == TRUE) {
-write.csv(subA, file = paste0("SubmissionFiles/Submission", 
-                              mNames[modelNum], "AStage2.csv"), 
-          row.names = FALSE)
-write.csv(subB, file = paste0("SubmissionFiles/Submission", 
-                              mNames[modelNum], "BStage2.csv"), 
-          row.names = FALSE)
-} else {
-  write.csv(subA, file = paste0("SubmissionFiles/Submission", 
-                                mNames[modelNum], "Stage2.csv"), 
-            row.names = FALSE)
-}
-
-# Simpler Modeling --------------------------------------------------------
-
-# Reading in Kaggle data
-massey <- read.csv("Kaggle Data/MasseyOrdinals/MasseyOrdinals.csv") %>% 
-  rename(DayNum = RankingDayNum)
-gameRes <- read.csv("Kaggle Data/DataFiles/RegularSeasonCompactResults.csv") %>% 
-  filter(Season %in% 2010:2018)
-locData <- read.csv("Kaggle Data/CitiesEnriched.csv") %>% dplyr::select(CityID, City, Lat, Lng) %>% 
-  left_join(read.csv("Kaggle Data/DataFiles/GameCities.csv"), by = c("CityID" = "CityID"))
-
-# Merging location and game data
-gameLoc <- left_join(gameRes, locData, by = c("Season" = "Season", "DayNum" = "DayNum",
-                                              "LTeamID" = "LTeamID", "WTeamID" = "WTeamID")) %>% 
-  dplyr::select(-CRType, -NumOT)
-
-# Converting massey data from long to wide format
-massey <- reshape(massey, idvar = c("Season", "DayNum", "TeamID"), 
-                  timevar = "SystemName", direction = "wide", 
-                  v.names = "OrdinalRank") %>% filter(Season >= 2010)
-
-# Adding MOV, Awin columns and recoding to have reference team
-combined <- gameRes %>% mutate(MOV = WScore - LScore, 
-                               refInd = ifelse(MOV %% 2 == 0, 1, 0),
-                               TeamA = ifelse(refInd == 1, WTeamID, LTeamID),
-                               TeamB = ifelse(refInd == 0, WTeamID, LTeamID),
-                               MOV = ifelse(refInd == 1, MOV, -MOV),
-                               Awin = as.integer(MOV > 0),
-                               WLoc = as.character(WLoc),
-                               Aloc = ifelse(refInd == 1, WLoc,
-                                             ifelse(WLoc == "H", "A", 
-                                                    ifelse(WLoc == "A", "H",
-                                                           "N")))) %>% 
-  dplyr::select(-c(WTeamID, LTeamID, WScore, LScore, WLoc, NumOT)) %>% 
-  dplyr::select(TeamA, TeamB, refInd, MOV, Awin, Aloc, everything())
-
-# Merging data sets
-combined <- combined %>% left_join(massey, by = c("Season" = "Season",
-                                                  "DayNum" = "DayNum",
-                                                  "TeamA" = "TeamID")) %>% 
-  left_join(massey, by = c("Season" = "Season",
-                           "DayNum" = "DayNum",
-                           "TeamB" = "TeamID"), suffix = c(".A", ".B"))
-
-# Columns to keep
-keepCols <- sapply(combined, FUN = function(x) {
-  sum(is.na(x))})[which(sapply(combined, FUN = function(x) {sum(is.na(x))
-  }) < 76075)] %>% names()
-combined <- combined[, keepCols]
-
-# Create vector of covariate column indices
-covCols <- str_split(keepCols, pattern = "[.]") %>% map(2) %>% 
-  map(.f = is.null) %>% unlist()
-
-# Make sure adjacent A/B rankings match
-sort(keepCols[!covCols])
-
-# Calculating massey ranking differences: TeamA - TeamB
-for(i in seq(1, (length(sort(keepCols[!covCols])) - 1), by = 2)) { 
-  c1 <- sort(keepCols[!covCols])[i]; 
-  c2 <- sort(keepCols[!covCols])[1 + i]; 
-  cname <- paste0(str_split(c1, pattern = "[.]") %>% 
-                    map(2), "diff"); 
-  combined[, cname] <- combined[, c1] - combined[, c2]
-}
-
-combined <- combined %>% dplyr::select(Season, DayNum, TeamA, TeamB, MOV, Awin, Aloc,
-                                POMdiff, SAGdiff, DOKdiff, MORdiff, PIGdiff) 
-combined$AvgRankDiff <- combined[, c("POMdiff", "SAGdiff", "DOKdiff", "MORdiff",
-                                     "PIGdiff")] %>% 
-  apply(FUN = mean, MARGIN = 1, na.rm = T)
-
-# Only keeping obs with AvgRankingDiff value
-combined <- combined %>% filter(!is.nan(AvgRankDiff))
-
-# Trying PCR, LDA, and random effects model
-form2 <- MOV ~ 0 + .
-form3 <- Awin ~ 0 + .
-pcrData <- combined[, c("MOV", "Aloc", "POMdiff", "SAGdiff", "DOKdiff",
-                        "MORdiff", "PIGdiff", "AvgRankDiff")]
-
-# Separating into training and test sets
-set.seed(1994)
-trainSize2 <- 0.80
-
-# Randomly selecting training set
-trInds2 <- sample(1:nrow(pcrData), replace = FALSE, 
-                  size = ceiling(trainSize2*nrow(pcrData)))
-# Training objects
-modelData2 <- modelDats[[model]][trInds2, ]
-designMat2 <- designMats[[model]][trInds2, ]
-
-# Test Objects
-modelData.test2 <- modelDats[[model]][-trInds2, ]
-designMat.test2 <- designMats[[model]][-trInds2, ]
-
-pcrFit2 <- pcr(form2, data = pcrData, validation = "CV", segments = 10)
-ldaFit2 <- lda(form3, data = modelData)
-
