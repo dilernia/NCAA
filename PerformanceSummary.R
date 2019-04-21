@@ -41,8 +41,8 @@ designMats <- list(MOV = model.matrix(forms$MOV, data = modelDats$MOV),
 # Setting parameters ------------------------------------------------------
 
 # Should be one of 'MOV' or 'Awin'
-model <- "MOV"
-#model <- "Awin"
+#model <- "MOV"
+model <- "Awin"
 seed <- 1994
 trainSize <- 0.80
 set.seed(seed)
@@ -324,7 +324,7 @@ combined$Response <- factor(combined$Response, levels = c("Win/Loss", "MOV", "Ot
 }
 minRank <- 800
 ggPoints <- combined %>% filter(Rank <= minRank) %>% ggplot(aes(x = Rank, y = LogLoss, color = Response)) +
-  geom_point()  + 
+  geom_point() +
   geom_point(data = combined %>% filter(Response != "Other Kagglers", Rank <= minRank)) +
   scale_color_manual(values = c("skyblue", "firebrick2", "black"), name = "Model") +
   geom_hline(yintercept = 0.69314, linetype = 2) +
@@ -338,3 +338,36 @@ ggPoints <- combined %>% filter(Rank <= minRank) %>% ggplot(aes(x = Rank, y = Lo
            y = c(0.25), label = ": naive model")
 ggPoints
 ggsave(ggPoints, filename = "pointsPlot.pdf", device = cairo_pdf)
+
+# Plotting prediction error by test error
+resultsMOV <- readRDS("results_MOV_.rds")
+resultsMOV$Model <- rownames(resultsMOV)
+resultsAwin <- readRDS("results_Awin_.rds")
+resultsAwin$Model <- rownames(resultsAwin)
+
+aggTest <- rbind(resultsMOV, resultsAwin) %>% select(Model, Misclassification.Rate,
+                                                     Log.Loss, Response) %>% 
+  left_join(aggRes, by = c("Model" = "Model", "Response" = "Response"),
+            suffix = c(".test", ".actual"))
+
+# Plot for Log Loss
+llGG <- aggTest %>% ggplot(aes(x = Log.Loss.test, y = Log.Loss.actual, color = Response)) +
+  geom_point()  + scale_color_manual(values = c("firebrick2", "skyblue")) +
+  labs(title = "Actual by Test Performance for Log Loss", y = "Actual Log Loss",
+       x = "Test Log Loss", 
+       subtitle = bquote(paste(rho, " = ", .(round(cor(aggTest$Log.Loss.test, 
+                                                     aggTest$Log.Loss.actual, use = "complete.obs"), 3))))) +
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5),
+                     plot.subtitle = element_text(hjust = 0.5))
+ggsave(llGG, filename = "llGG.pdf", device = cairo_pdf)
+
+# Plot for Misclassification Rate
+mcGG <- aggTest %>% ggplot(aes(x = Misclassification.Rate.test, y = Misclassification.Rate.actual, color = Response)) +
+  geom_point()  + scale_color_manual(values = c("firebrick2", "skyblue")) +
+  labs(title = "Actual by Test Performance for Misclassification Rate", y = "Actual Misclassification",
+       x = "Test Misclassification", 
+       subtitle = bquote(paste(rho, " = ", .(round(cor(aggTest$Misclassification.Rate.test, 
+                                                       aggTest$Misclassification.Rate.actual, use = "complete.obs"), 3))))) +
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5),
+                     plot.subtitle = element_text(hjust = 0.5))
+ggsave(mcGG, filename = "mcGG.pdf", device = cairo_pdf)
