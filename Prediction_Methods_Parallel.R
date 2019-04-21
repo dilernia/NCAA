@@ -18,10 +18,10 @@ library(caret)
 library(kernlab)
 library(RSNNS)
 
-setwd("/panfs/roc/groups/4/zhangl4/diler001/NCAA/")
+#setwd("/panfs/roc/groups/4/zhangl4/diler001/NCAA/")
 
 # Reading in data
-desResp <- readRDS("designResponse.rds")
+desResp <- readRDS("Our_Data/designResponse.rds")
 
 # Standardizing predictors and removing some columns
 designMat <- subset(desResp[[1]], select = -c(Awin, Season, Tourney, Spread,
@@ -52,10 +52,10 @@ designMats <- list(MOV = model.matrix(forms$MOV, data = modelDats$MOV),
 # Setting parameters ------------------------------------------------------
 
 # Should be one of 'MOV' or 'Awin'
-model <- "MOV"
-#model <- "Awin"
-seed <- 3311994
-trainSize <- 0.80
+#model <- "MOV"
+model <- "Awin"
+seed <- 1994
+trainSize <- 0.05
 set.seed(seed)
 
 # Randomly selecting training set
@@ -97,6 +97,17 @@ my.tree.pruned <- prune.tree(my.tree, k = opt.k)
 cvglmFit <- cv.glmnet(x = designMat, y = outcome[complete.cases(modelData)], 
                       nfolds = 10, family = ifelse(model == "Awin", "binomial", "gaussian"),
                       lambda = c(0.001, 0.003, seq(0.005, 0.50, by = 0.005)))
+# # Trying bridge just to see how it would've done
+# glmnetMods <- lapply(X = c(seq(0, 1, by = 0.10)), FUN = function(a) {
+#   cv.glmnet(x = designMat, y = outcome[complete.cases(modelData)], 
+#                       alpha = a,
+#                       nfolds = 10, family = ifelse(model == "Awin", "binomial", "gaussian"),
+#                       lambda = c(0.001, 0.003, seq(0.005, 0.50, by = 0.005)))})
+# glmnetPreds <- lapply(glmnetMods, FUN = function(mod) {capper(predict(mod, newx = designMat.test, 
+#                                                                s = "lambda.min", type = "response"))})
+# # Summarizing performance of methods
+# glmnetRes <- do.call("rbind", mapply(FUN = predSummary, preds = glmnetPreds, 
+#                                    response = model, SIMPLIFY = FALSE))
 
 # (4) Principle Components Regression with 10-fold CV
 pcrFit <- pcr(form, data = modelData.pcr, validation = "CV", segments = 10)
