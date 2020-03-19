@@ -17,65 +17,186 @@ library(nnet)
 library(caret)
 library(kernlab)
 library(RSNNS)
+library(parallel)
+library(doParallel)
+library(foreach)
 
 # Reading in data
-desResp <- readRDS("Our_Data/designResponse.rds")
+desResp <- readRDS("designResponse.rds")
 
 # Creating design matrix and response vector
-designData <- desResp[[1]]
-respVec <- desResp[[2]]$MOV
+designData <- subset(desResp[[1]], select = -c(Awin, Season, Tourney, Spread,
+                                               ATeamID, BTeamID, Aloc, Site)) 
+resp <- desResp[[2]]$Awin
+
+# Clearing from environment
+remove("desResp")
 
 # Setting parameters ------------------------------------------------------
 seed <- 1994
-trainSize <- 0.10
+
+# Available models to fit
+models <- c("glmnet", "PCR", "LDA", "GB",
+            "NNF", "RRF", "NNet", "NNet3",
+            "SVMrad", "SVMpoly")
+
+model <- "GB"
+trainSize <- 0.05
 secOrder <- FALSE # Fit a 1st or 2nd order model
-binary <- FALSE # Binary or continuous response
+binary <- TRUE # Binary or continuous response
+ncores <- 2
 set.seed(seed)
 
 # Removing any rows with missing values
 compInds <- complete.cases(designData)
 designData <- designData[compInds, ]
-respVec <- respVec[compInds]
+resp <- resp[compInds]
 
 # Creating model data frame
-modelData <- as.data.frame(cbind(respVec, designData))
+modelData <- as.data.frame(cbind(resp, designData))
 
 # Specifying model order
 modOrder <- ifelse(secOrder, "order2", "order1")
 
 # Creating model form object
-form <- list(order1 = respVec ~ 0 + ., order2 =  respVec ~ 0 + .^2)[[modOrder]]
+form <- list(order1 = resp ~ 0 + ., 
+             order2 =  resp ~ 0 + .^2)[[modOrder]]
 
 # Creating model design matrix
 designMat <- model.matrix(form, data = designData)
+
+# Changing factor level names to work with train() function
+if(binary == TRUE) {
+  modelData$resp <- factor(modelData$resp)
+  levels(modelData$resp) <- c("no", "yes")
+  ctrl <- trainControl(method = "cv", number = 5, classProbs =  TRUE)
+  
+  if(model == "PCR") {
+  # Changing response for PCR to be numeric
+  modelData.pcr <- modelData
+  modelData.pcr$resp <- as.integer(as.character(modelData$resp) == "yes")
+  }
+} else {
+  ctrl <- trainControl(method = "cv", number = 5)
+  if(model == "PCR") {
+  modelData.pcr <- modelData
+  }
+}
 
 # Randomly selecting training set
 trInds <- sample(1:nrow(designMat), replace = FALSE, 
                  size = ceiling(trainSize*nrow(designMat)))
 
-# Training objects
-modelData <- modelData[trInds, ]
-designMat <- designMat[trInds, ]
-outcome <- respVec[trInds]
+# Creating training objects
+modelData.tr <- modelData[trInds, ]
+modelData.pcr.tr <- modelData.pcr[trInds, ]
+designMat.tr <- designMat[trInds, ]
+resp.tr <- resp[trInds]
 
-# Test Objects
+# Creating test Objects
 modelData.test <- modelData[-trInds, ]
+modelData.pcr.test <- modelData.pcr[-trInds, ]
 designMat.test <- designMat[-trInds, ]
+resp.test <- resp[-trInds]
 
-# Changing factor level names to work with train() function
-if(binary == TRUE) {
-  levels(modelData$outcome) <- c("no", "yes")
-  ctrl <- trainControl(method = "cv", number = 5, classProbs =  TRUE)
-  
-  # Changing outcome for PCR to be numeric
-  modelData.pcr <- modelData
-  modelData.pcr$outcome <- as.integer(as.character(modelData$outcome) == "yes")
-} else {
-  ctrl <- trainControl(method = "cv", number = 5)
-  modelData.pcr <- modelData
-}
-
-# (1)a 1st-order Linear/Logistic Regression with Lasso Penalty using 10-fold CV
-cvglmFit <- cv.glmnet(x = designMat, y = outcome, 
+if(model == "glmnet") {
+# (1) Linear/Logistic Regression with Lasso Penalty using 10-fold CV
+cvglmFit <- cv.glmnet(x = designMat[trInds, ], y = resp[trInds], 
                       nfolds = 10, family = ifelse(binary == TRUE, "binomial", "gaussian"),
                       lambda = c(0.0001, 0.0005, seq(0.001, 0.10, by = 0.001)))
+}
+
+if(model == "PCR") {
+# (2) Principle Components Regression with 10-fold CV
+pcrFit <- pcr(form, data = modelData[trInds, ], validation = "CV", segments = 10)
+
+# Finds optimal number of components
+ncomps <- as.numeric(strsplit(colnames(pcrFit$validation$PRESS)[
+  which(pcrFit$validation$PRESS == min(pcrFit$validation$PRESS))], split = " ")[[1]][1])
+}
+
+if(model == "LDA") {
+# (3) Linear Discriminant Analysis
+ldaFit <- suppressWarnings(lda(form, data = modelData[trInds, ]))
+}
+
+if(model == "GB") {
+# (4) Stochastic Gradient boosting
+inputs <- expand.grid(n.trees = 1000,
+                      shrinkage = 0.20,
+                      interaction.depth = 2, 
+                      n.minobsinnode = 8)
+argus <- list(method = "gbm", distribution = ifelse(binary == TRUE,
+                                              "bernoulli", "gaussian"))
+}
+
+if(model == "NNF") {
+# (5) Neural Network with Feature Extraction
+inputs <- expand.grid(size = c(2, 3, 4),
+                      decay = c(0.0001))
+argus <- list(method = 'pcaNNet', maxit = 10000,
+              linout = ifelse(binary == TRUE, FALSE, TRUE))
+}
+
+if(model == "RRF") {
+# (6) Regularized Random Forest
+defMtry <- floor(sqrt(ncol(modelData[trInds, ])))
+inputs <- expand.grid(mtry =(defMtry - 2):(defMtry + 3),
+                      coefReg = 0.80, coefImp = c(0))
+argus <- list(method = "RRF")
+}
+
+if(model == "NNet") {
+# (7) Artificial Neural Network w/ 1 hidden layer
+inputs <- expand.grid(size = c(4),
+                      decay = c(0.001))
+argus <- list(method = "nnet", trace = FALSE, maxit = 10000,
+              linout = ifelse(binary == TRUE, FALSE, TRUE))
+}
+
+if(model == "NNet3") {
+# (8) Artificial Neural Network w/ 3 hidden layers
+inputs <- expand.grid(layer1 = c(3),
+                      layer2 = c(1),
+                      layer3 = c(1),
+                      decay = c(0.001, 0.005, 0.01, 0.015, 0.02))
+argus <- list(method = 'mlpWeightDecayML', trace = FALSE, maxit = 10000,
+              linout = ifelse(binary == TRUE, FALSE, TRUE))
+}
+
+if(model == "SVMrad") {
+# (9) Radial Support Vector Machine (SVM)
+inputs <- expand.grid(sigma = c(0.01, .015, 0.02),
+                      C = c(0.50, 1, 2, 3))
+argus <- list(method = "svmRadial")
+}
+
+if(model == "SVMpoly") {
+# (10) Polynomial SVM
+inputs <- expand.grid(degree = 2, scale = 1, C = 2)
+argus <- list(method = 'svmPoly')
+}
+
+# Training method in parallel
+ncores <- ifelse(is.null(ncores), 1, ncores)
+cl <- makeCluster(ncores)
+registerDoParallel(cl)
+
+res <- foreach(iter = 1:nrow(inputs)) %dopar% {
+  
+  # Supplying conditional and unconditional arguments
+  my.model <- do.call(caret::train, args = c(list(form = form, 
+                      data = modelData[trInds, ], 
+                      trControl = ctrl, method = argus$method,
+                      tuneGrid = inputs[iter, ]),
+                      list(distribution = argus$distribution)[!is.null(argus$distribution)],
+                      list(trace = argus$trace)[!is.null(argus$trace)],
+                      list(maxit = argus$maxit)[!is.null(argus$maxit)],
+                      list(linout = argus$linout)[!is.null(argus$linout)]))
+  return(my.model)
+}
+stopCluster(cl)
+
+# Selecting optimal model
+my.model <- res[[which.max(sapply(res, 
+                FUN = function(x) {x$results[ifelse(binary, "Accuracy", "RMSE")]}))]]
