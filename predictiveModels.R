@@ -2,7 +2,7 @@
 # Title: Predictive Models
 # Author: Andrew DiLernia
 # Date: 03/14/2020
-# Purpose: Implement predictive models given design matrix and response
+# Purpose: Implement predictive models using design matrix and response
 #################
 
 library(glmnet)
@@ -32,7 +32,6 @@ resp <- desResp[[2]]$Awin
 # Clearing from environment
 remove("desResp")
 
-# Setting parameters ------------------------------------------------------
 seed <- 1994
 
 # Available models to fit
@@ -40,12 +39,18 @@ models <- c("glmnet", "PCR", "LDA", "GB",
             "NNF", "RRF", "NNet", "NNet3",
             "SVMrad", "SVMpoly")
 
+# Setting parameters ------------------------------------------------------
 model <- "GB"
 trainSize <- 0.05
 secOrder <- FALSE # Fit a 1st or 2nd order model
 binary <- TRUE # Binary or continuous response
 ncores <- 2
 set.seed(seed)
+
+# Function for fitting machine learning model
+machineLearn <- function(designData, resp, model = "glmnet",
+                         trainSize = 0.05, secOrder = FALSE,
+                         binary = FALSE, ncores = 1) {
 
 # Removing any rows with missing values
 compInds <- complete.cases(designData)
@@ -65,10 +70,15 @@ form <- list(order1 = resp ~ 0 + .,
 # Creating model design matrix
 designMat <- model.matrix(form, data = designData)
 
+# Randomly selecting indices for training set
+trInds <- sample(1:nrow(designMat), replace = FALSE, 
+                 size = ceiling(trainSize*nrow(designMat)))
+
 # Changing factor level names to work with train() function
 if(binary == TRUE) {
-  modelData$resp <- factor(modelData$resp)
-  levels(modelData$resp) <- c("no", "yes")
+  modelData$resp <- factor(gsub(gsub(as.character(modelData$resp), pattern = "1",
+                                replacement = "yes"), pattern = "0",
+                                replacement = "no"))
   ctrl <- trainControl(method = "cv", number = 5, classProbs =  TRUE)
   
   if(model == "PCR") {
@@ -80,44 +90,32 @@ if(binary == TRUE) {
   ctrl <- trainControl(method = "cv", number = 5)
   if(model == "PCR") {
   modelData.pcr <- modelData
+  
+  # Training and test data sets
+  modelData.pcr.tr <- modelData.pcr[trInds, ]
+  modelData.pcr.test <- modelData.pcr[-trInds, ]
   }
 }
 
-# Randomly selecting training set
-trInds <- sample(1:nrow(designMat), replace = FALSE, 
-                 size = ceiling(trainSize*nrow(designMat)))
-
-# Creating training objects
-modelData.tr <- modelData[trInds, ]
-modelData.pcr.tr <- modelData.pcr[trInds, ]
-designMat.tr <- designMat[trInds, ]
-resp.tr <- resp[trInds]
-
-# Creating test Objects
-modelData.test <- modelData[-trInds, ]
-modelData.pcr.test <- modelData.pcr[-trInds, ]
-designMat.test <- designMat[-trInds, ]
-resp.test <- resp[-trInds]
-
 if(model == "glmnet") {
 # (1) Linear/Logistic Regression with Lasso Penalty using 10-fold CV
-cvglmFit <- cv.glmnet(x = designMat[trInds, ], y = resp[trInds], 
+  bestMod <- cv.glmnet(x = designMat[trInds, ], y = resp[trInds], 
                       nfolds = 10, family = ifelse(binary == TRUE, "binomial", "gaussian"),
                       lambda = c(0.0001, 0.0005, seq(0.001, 0.10, by = 0.001)))
 }
 
 if(model == "PCR") {
 # (2) Principle Components Regression with 10-fold CV
-pcrFit <- pcr(form, data = modelData[trInds, ], validation = "CV", segments = 10)
+  bestMod <- pcr(form, data = modelData[trInds, ], validation = "CV", segments = 10)
 
 # Finds optimal number of components
-ncomps <- as.numeric(strsplit(colnames(pcrFit$validation$PRESS)[
-  which(pcrFit$validation$PRESS == min(pcrFit$validation$PRESS))], split = " ")[[1]][1])
+ncomps <- as.numeric(strsplit(colnames(bestMod$validation$PRESS)[
+  which(bestMod$validation$PRESS == min(bestMod$validation$PRESS))], split = " ")[[1]][1])
 }
 
 if(model == "LDA") {
 # (3) Linear Discriminant Analysis
-ldaFit <- suppressWarnings(lda(form, data = modelData[trInds, ]))
+  bestMod <- suppressWarnings(lda(form, data = modelData[trInds, ]))
 }
 
 if(model == "GB") {
@@ -157,10 +155,10 @@ argus <- list(method = "nnet", trace = FALSE, maxit = 10000,
 if(model == "NNet3") {
 # (8) Artificial Neural Network w/ 3 hidden layers
 inputs <- expand.grid(layer1 = c(3),
-                      layer2 = c(1),
-                      layer3 = c(1),
-                      decay = c(0.001, 0.005, 0.01, 0.015, 0.02))
-argus <- list(method = 'mlpWeightDecayML', trace = FALSE, maxit = 10000,
+                      layer2 = c(2),
+                      layer3 = c(2),
+                      decay = c(0.01))
+argus <- list(method = 'mlpWeightDecayML', trace = FALSE, maxit = 5000,
               linout = ifelse(binary == TRUE, FALSE, TRUE))
 }
 
@@ -177,12 +175,14 @@ inputs <- expand.grid(degree = 2, scale = 1, C = 2)
 argus <- list(method = 'svmPoly')
 }
 
+if(model %in% c("GB", "NNF", "RRF", "NNet", "NNet3",
+                 "SVMrad", "SVMpoly")) {
 # Training method in parallel
 ncores <- ifelse(is.null(ncores), 1, ncores)
 cl <- makeCluster(ncores)
 registerDoParallel(cl)
 
-res <- foreach(iter = 1:nrow(inputs)) %dopar% {
+mods <- foreach(iter = 1:nrow(inputs)) %dopar% {
   
   # Supplying conditional and unconditional arguments
   my.model <- do.call(caret::train, args = c(list(form = form, 
@@ -198,5 +198,36 @@ res <- foreach(iter = 1:nrow(inputs)) %dopar% {
 stopCluster(cl)
 
 # Selecting optimal model
-my.model <- res[[which.max(sapply(res, 
-                FUN = function(x) {x$results[ifelse(binary, "Accuracy", "RMSE")]}))]]
+bestMod <- mods[[which.max(sapply(mods, 
+                FUN = function(x) {x$results[ifelse(binary, "Accuracy", "Rsquared")]}))]]
+}
+
+# Obtaining predicted probabilities for test set
+  preds <- predict(bestMod, modelData[-trInds, ], 
+                     type = ifelse(binary, "prob", "raw"))
+  
+  
+# Calculating test set performance summary
+   if(binary == TRUE) {
+  preds <- preds[, "yes"]
+  meanSqErr <- round(mean((preds - resp[-trInds])^2), 4)
+  logLoss <- -mean(resp[-trInds]*log(preds) + (1-resp[-trInds])*log(1-preds))
+     
+  misRate <- round(mean(abs(as.integer(preds > 0.50) - resp[-trInds])), 4)  
+  sensitivity <- round(mean(preds[which(resp[-trInds] == 1)] > 0.50), 4)
+  specificity <- round(1 - mean(preds[which(resp[-trInds] == 0)] > 0.50), 4)
+  
+  testSummary <- data.frame(Model = model,
+                       Accuracy = 1 - misRate,
+                       MisRate = misRate,
+                       MSE = meanSqErr,
+                       Sensitivity = sensitivity,
+                       Specificity = specificity,
+                       LogLoss = round(logLoss, 4))
+  } else {
+    testSummary <- data.frame(Model = model,
+                              MSE = round(mean((preds - resp[-trInds])^2), 4))
+  }
+  
+return(list(bestMod, testSummary))
+}
