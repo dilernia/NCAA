@@ -40,7 +40,7 @@ models <- c("glmnet", "PCR", "LDA", "GB",
             "SVMrad", "SVMpoly")
 
 # Setting parameters ------------------------------------------------------
-model <- "GB"
+model <- "LDA"
 trainSize <- 0.05
 secOrder <- FALSE # Fit a 1st or 2nd order model
 binary <- TRUE # Binary or continuous response
@@ -106,7 +106,7 @@ if(model == "glmnet") {
 
 if(model == "PCR") {
 # (2) Principle Components Regression with 10-fold CV
-  bestMod <- pcr(form, data = modelData[trInds, ], validation = "CV", segments = 10)
+  bestMod <- pcr(form, data = modelData.pcr[trInds, ], validation = "CV", segments = 10)
 
 # Finds optimal number of components
 ncomps <- as.numeric(strsplit(colnames(bestMod$validation$PRESS)[
@@ -203,13 +203,27 @@ bestMod <- mods[[which.max(sapply(mods,
 }
 
 # Obtaining predicted probabilities for test set
+if(model %in% c("GB", "NNF", "RRF", "NNet", "NNet3",
+                "SVMrad", "SVMpoly")) {
   preds <- predict(bestMod, modelData[-trInds, ], 
                      type = ifelse(binary, "prob", "raw"))
+  if(binary) {
+    preds <- preds[, "yes"]
+  }
+} else if (model == "glmnet") {
+  preds <- predict(bestMod, designMat[-trInds, ], type = "response")
+} else if (model == "PCR") {
+  preds <- predict(bestMod, modelData[-trInds, ], ncomp = ncomps)
+} else if (model == "LDA") {
+  preds <- predict(bestMod, modelData[-trInds, ])[["posterior"]]
+  if(binary) {
+    preds <- preds[, "yes"]
+  }
+}
   
   
 # Calculating test set performance summary
    if(binary == TRUE) {
-  preds <- preds[, "yes"]
   meanSqErr <- round(mean((preds - resp[-trInds])^2), 4)
   logLoss <- -mean(resp[-trInds]*log(preds) + (1-resp[-trInds])*log(1-preds))
      
