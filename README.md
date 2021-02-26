@@ -3,8 +3,4 @@ Data and scripts for competing in [Google Cloud & NCAA® ML Competition 2019-Men
 
 ![Bar plot example.](https://raw.githubusercontent.com/dilernia/NCAA/master/barPlot.pdf)
 
-<object data="https://raw.githubusercontent.com/dilernia/NCAA/master/barPlot.pdf" type="application/pdf" width="700px" height="700px">
-    <embed src="https://raw.githubusercontent.com/dilernia/NCAA/master/barPlot.pdf">
-        <p>This browser does not support PDFs. Please download the PDF to view it: <a href="https://raw.githubusercontent.com/dilernia/NCAA/master/barPlot.pdf">Download PDF</a>.</p>
-    </embed>
-</object>
+<a href='https://tidyverse.tidyverse.org'><img src='https://raw.githubusercontent.com/dilernia/NCAA/master/barPlot.pdf' align="right" height="138.5" /></a>
