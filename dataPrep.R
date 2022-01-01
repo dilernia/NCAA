@@ -76,13 +76,105 @@ fullClean <- fullRawAB %>%
 # Initial values from 538's values for NBA elo ratings:
 # https://fivethirtyeight.com/features/how-we-calculate-nba-elo-ratings/
 
+# Smoothing parameter for elo calculation
+kVal <- 50
+
+# Function for calculating game prediction form elo values
 # home: -1 for away, 0 for neutral, 1 for home
 eloPred <- function(elo1, elo2, homeAdv = 140, home = 0) {
   return(1 / (1 + 10^((elo2 - (elo1 + home*homeAdv)) / 400)))
 }
 
-eloUpdate <- function(elo, pred, actual, k = 20) {
+# Function for calculating updated elo values
+eloUpdate <- function(elo, pred, actual, k = 50) {
   return(elo + k*(actual - pred))
+}
+
+# Function for adding elo values to data frame
+# seasonData: A data frame with columns A_TeamID,
+# B_TeamID, A_Loc, Amov, Awin
+# kVal: Smoothing parameter for elo calculation
+# method: One of "NBA" or "NFL". Specifies smoothing method in elo update.
+# eloStarts: Optional. Scalar or vector of starting elo values for unique TeamID's
+addElo <- function(seasonData = full2003, method = "NBA", kVal = 50, eloStarts = 1500) {
+  teamIDs <- unique(seasonData$A_TeamID)
+  
+  homes <- ifelse(seasonData$A_Loc == "N", 0,
+                  ifelse(seasonData$A_Loc == "A", -1,
+                         ifelse(seasonData$A_Loc == "H", 1, NA)))
+  
+  mmNumerator <- (seasonData$Amov + 3)^0.80
+  Awin10 <- ifelse(seasonData$Awin, 1, 0)
+  ks <- kVal*log(1 + abs(seasonData$Amov))
+  
+  elos <- data.frame(team = teamIDs, elo = 1500)
+  
+  # Initialize elo columns
+  seasonData <- seasonData %>% 
+      mutate(eloA = 1500, eloB = 1500)
+  elos <- data.frame(team = teamIDs, elo = eloStarts)
+  
+  if(method == "NBA") {
+  for(i in 1:nrow(seasonData)) {
+    # Storing current elo values
+    Ainds <- elos$team == seasonData$A_TeamID[i]
+    Binds <- elos$team == seasonData$B_TeamID[i]
+    seasonData$eloA[i] <- elos$elo[Ainds]
+    seasonData$eloB[i] <- elos$elo[Binds]
+    
+    # Elo prediction
+    pred <- eloPred(elo1 = seasonData$eloA[i],
+                    elo2 = seasonData$eloB[i], 
+                    home = homes[i])
+    
+    # Margin of victory multipliers
+    movMultiA <- mmNumerator[i] /
+      (7.5 + 0.006*(seasonData$eloA[i] - seasonData$eloB[i]))
+    movMultiB <- mmNumerator[i] /
+      (7.5 + 0.006*(seasonData$eloB[i] - seasonData$eloA[i]))
+    
+    # Calculating new elo values
+    newA <- eloUpdate(elo = seasonData$eloA[i], pred = pred,
+                      actual = Awin10[i], k = movMultiA*kVal)
+    newB <- eloUpdate(elo = seasonData$eloB[i], pred = 1 - pred,
+                      actual = (1-Awin10[i]), k = movMultiB*kVal)
+    
+    # Updating elo values
+    elos$elo[Ainds] <- newA
+    elos$elo[Binds] <- newB
+  }
+  } else if(method == "NFL"){
+    for(i in 1:nrow(seasonData)) {
+      # Storing current elo values
+      Ainds <- elos$team == seasonData$A_TeamID[i]
+      Binds <- elos$team == seasonData$B_TeamID[i]
+      seasonData$eloA[i] <- elos$elo[Ainds]
+      seasonData$eloB[i] <- elos$elo[Binds]
+      
+      # Elo prediction
+      pred <- eloPred(elo1 = seasonData$eloA[i],
+                      elo2 = seasonData$eloB[i], 
+                      home = homes[i])
+      
+      # Margin of victory multipliers
+      movMultiA <- mmNumerator[i] /
+        (7.5 + 0.006*(seasonData$eloA[i] - seasonData$eloB[i]))
+      movMultiB <- mmNumerator[i] /
+        (7.5 + 0.006*(seasonData$eloB[i] - seasonData$eloA[i]))
+      
+      # Calculating new elo values
+      newA <- eloUpdate(elo = full2003$eloA[i], pred = pred,
+                        actual = Awin10[i], k = ks[i])
+      newB <- eloUpdate(elo = full2003$eloB[i], pred = 1 - pred,
+                        actual = (1-Awin10[i]), k = ks[i])
+      
+      # Updating elo values
+      elos$elo[Ainds] <- newA
+      elos$elo[Binds] <- newB
+    }
+  }
+  
+  return(seasonData)
 }
 
 # Function to reset team elos to average of 
@@ -129,92 +221,13 @@ seasonReset <- function(oldSeason, newSeason) {
 results <- data.frame(k = seq(10, 100, by = 10), 
                       mod1 = NA, mod2 = NA)
 
-# Initializing elo values
-# (Just do for very first game ever played by each team
-# by looking at A_TeamID and B_TeamID)
-for(j in 1:nrow(results)) {
-kVal <- 50
-
-full2003 <- fullClean %>% filter(Season == 2003) %>% 
-  mutate(eloA = 1500, eloB = 1500) %>% head(4680)
-
-teamIDs <- unique(full2003$A_TeamID)
-
-homes <- ifelse(full2003$A_Loc == "N", 0,
-            ifelse(full2003$A_Loc == "A", -1,
-            ifelse(full2003$A_Loc == "H", 1, NA)))
-
-mmNumerator <- (full2003$Amov + 3)^0.80
-Awin10 <- ifelse(full2003$Awin, 1, 0)
-ks <- kVal*log(1 + abs(full2003$Amov))
-
-elos <- data.frame(team = teamIDs, elo = 1500)
-
-for(i in 1:nrow(full2003)) {
-  # Storing current elo values
-  Ainds <- elos$team == full2003$A_TeamID[i]
-  Binds <- elos$team == full2003$B_TeamID[i]
-  full2003$eloA[i] <- elos$elo[Ainds]
-  full2003$eloB[i] <- elos$elo[Binds]
-  
-  # Elo prediction
-  pred <- eloPred(elo1 = full2003$eloA[i],
-                  elo2 = full2003$eloB[i], 
-                  home = homes[i])
-  
-  # Margin of victory multipliers
-  movMultiA <- mmNumerator[i] /
-     (7.5 + 0.006*(full2003$eloA[i] - full2003$eloB[i]))
-  movMultiB <- mmNumerator[i] /
-     (7.5 + 0.006*(full2003$eloB[i] - full2003$eloA[i]))
-  
-  # Calculating new elo values
-  newA <- eloUpdate(elo = full2003$eloA[i], pred = pred,
-                    actual = Awin10[i], k = movMultiA*kVal)
-  newB <- eloUpdate(elo = full2003$eloB[i], pred = 1 - pred,
-                    actual = (1-Awin10[i]), k = movMultiB*kVal)
-  
-  # Updating elo values
-  elos$elo[Ainds] <- newA
-  elos$elo[Binds] <- newB
-  }
+full2003 <- addElo(fullClean %>% filter(Season == 2003) %>% 
+                 head(4680), eloStarts = 1500)
 
 # Performance of calculated elo scores
 eloMod1 <- lm(Amov ~ 0 + eloA + eloB, 
               data = full2003)
 summary(eloMod1)$r.squared
-
-# Reset elo values and try alternative method
-elos$elo <- 1500
-
-for(i in 1:nrow(full2003)) {
-  # Storing current elo values
-  Ainds <- elos$team == full2003$A_TeamID[i]
-  Binds <- elos$team == full2003$B_TeamID[i]
-  full2003$eloA[i] <- elos$elo[Ainds]
-  full2003$eloB[i] <- elos$elo[Binds]
-  
-  # Elo prediction
-  pred <- eloPred(elo1 = full2003$eloA[i],
-                  elo2 = full2003$eloB[i], 
-                  home = homes[i])
-  
-  # Calculating new elo values
-  newA <- eloUpdate(elo = full2003$eloA[i], pred = pred,
-                    actual = Awin10[i], k = ks[i])
-  newB <- eloUpdate(elo = full2003$eloB[i], pred = 1 - pred,
-                    actual = (1-Awin10[i]), k = ks[i])
-  
-  # Updating elo values
-  elos$elo[Ainds] <- newA
-  elos$elo[Binds] <- newB
-}
-
-# Performance of calculated elo scores
-eloMod2 <- lm(Amov ~ 0 + eloA + eloB, 
-              data = full2003)
-summary(eloMod2)$r.squared
-}
 
 # Finding optimal k parameter
 results %>% pivot_longer(cols = c(mod1, mod2), values_to = "rsq") %>% 
