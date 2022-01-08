@@ -7,6 +7,7 @@
 
 library(tidyverse)
 library(readr)
+library(progress)
 
 stageDir <- "2022/ncaam-march-mania-2021/MDataFiles_Stage1/"
 
@@ -73,38 +74,25 @@ eloUpdate <- function(elo, pred, actual, k = 20) {
 
 # Function to reset team elos to average of 
 # previous season and conference average
-seasonReset <- function(oldSeason, newSeason) {
-  
-  # Next season teams
-  teamIDs <- unique(c(newSeason$A_TeamID, 
-                      newSeason$B_TeamID))
+seasonReset <- function(oldElos, teamIDs, center = mean, confer = confInfo) {
   
   # Conference average elos
-  confAvg <- oldSeason %>% group_by(A_Conference) %>% 
-    summarize(eloA = mean(eloA), countA = n()) %>% 
-    rename(Conference = A_Conference) %>% 
-    full_join(oldSeason %>% group_by(B_Conference) %>% 
-                summarize(eloB = mean(eloB), countB = n()) %>% 
-                rename(Conference = B_Conference)) %>% 
-    mutate(eloAvg = (eloA*countA + eloB*countB) / (countA + countB)) %>% 
-    select(Conference, eloAvg)
+  conf <- confer %>% filter(Season == oldElos$Season[1])
+  suppressMessages(confAvg <- oldElos %>% 
+                     left_join(conf, by = c("team" = "TeamID")) %>% 
+                     group_by(Conference) %>% 
+    summarize(eloAvg = center(elo)))
   
   # End of season elos
-  endElos <- oldSeason %>% 
-    select(Season, A_TeamID, B_TeamID, eloA, eloB, GameID) %>% 
-    pivot_longer(cols = c(A_TeamID, B_TeamID),
-                 values_to = "TeamID") %>% 
-    mutate(eloEnd = ifelse(name == "A_TeamID", eloA, eloB)) %>% 
-    group_by(TeamID) %>% slice(n()) %>% ungroup() %>% 
-    select(Season, TeamID, eloEnd)
+  endElos <- oldElos %>% rename(TeamID = team, eloEnd = elo)
   
   # Averaging end of season and conference average elos
-  newElos <- endElos %>% left_join(confAvg %>% 
-                                     left_join(confInfo %>% filter(Season == oldSeason$Season[1]))) %>% 
+  suppressMessages(newElos <- endElos %>% left_join(confAvg %>% 
+    left_join(confer %>% filter(Season == oldElos$Season[1]))) %>% 
     mutate(elo =  (eloEnd + eloAvg) / 2) %>% 
     select(TeamID, elo) %>% filter(TeamID %in% teamIDs) %>% 
     right_join(data.frame(TeamID = teamIDs)) %>% 
-    mutate(elo = ifelse(is.na(elo), 1500, elo))
+    mutate(elo = ifelse(is.na(elo), 1500, elo)))
   
   return(newElos)
 }
@@ -115,13 +103,16 @@ seasonReset <- function(oldSeason, newSeason) {
 # kVal: Smoothing parameter for elo calculation
 # method: One of "NBA" or "NFL". Specifies smoothing method in elo update.
 # eloStarts: Optional. Scalar or vector of starting elo values for unique TeamID's
+# tau: Second smoothing parameter for elo calculation
 addElo <- function(scores, method = "NBA", 
-                   kVal = 15, eloStarts = 1500) {
+                   kVal = 10, eloStarts = 1500, tau = 0.006) {
   seasons <- unique(scores$Season)
   nSeasons <- length(seasons)
   output <- vector("list", nSeasons)
   
-  for(s in 1:length(seasons)) {
+  pb <- progress_bar$new(total = nSeasons)
+  
+  for(s in 1:nSeasons) {
     seasonData <- scores %>% filter(Season == seasons[s])
     teamIDs <- unique(c(seasonData$A_TeamID, 
                         seasonData$B_TeamID))
@@ -130,7 +121,7 @@ addElo <- function(scores, method = "NBA",
                     ifelse(seasonData$A_Loc == "A", -1,
                            ifelse(seasonData$A_Loc == "H", 1, NA)))
     
-    mmNumerator <- (seasonData$Amov + 3)^0.80
+    mmNumerator <- sqrt(seasonData$Amov)
     Awin10 <- ifelse(seasonData$Awin, 1, 0)
     
     elos <- data.frame(team = teamIDs, elo = 1500)
@@ -155,15 +146,12 @@ addElo <- function(scores, method = "NBA",
         
         # Margin of victory multipliers
         movMultiA <- mmNumerator[i] /
-          (7.5 + 0.006*(seasonData$eloA[i] - seasonData$eloB[i]))
-        movMultiB <- mmNumerator[i] /
-          (7.5 + 0.006*(seasonData$eloB[i] - seasonData$eloA[i]))
+          (7.5 + tau*(seasonData$eloA[i] - seasonData$eloB[i]))
         
         # Calculating new elo values
         newA <- eloUpdate(elo = seasonData$eloA[i], pred = pred,
                           actual = Awin10[i], k = movMultiA*kVal)
-        newB <- eloUpdate(elo = seasonData$eloB[i], pred = 1 - pred,
-                          actual = (1-Awin10[i]), k = movMultiB*kVal)
+        newB <- seasonData$eloB[i] - (newA - seasonData$eloA[i])
         
         # Updating elo values
         elos$elo[Ainds] <- newA
@@ -186,10 +174,9 @@ addElo <- function(scores, method = "NBA",
                         home = homes[i])
         
         # Calculating new elo values
-        newA <- eloUpdate(elo = full2003$eloA[i], pred = pred,
+        newA <- eloUpdate(elo = seasonData$eloA[i], pred = pred,
                           actual = Awin10[i], k = ks[i])
-        newB <- eloUpdate(elo = full2003$eloB[i], pred = 1 - pred,
-                          actual = (1-Awin10[i]), k = ks[i])
+        newB <- seasonData$eloB[i] - (newA - seasonData$eloA[i])
         
         # Updating elo values
         elos$elo[Ainds] <- newA
@@ -200,11 +187,17 @@ addElo <- function(scores, method = "NBA",
     output[[s]] <- seasonData
     
     if(s < nSeasons) {
-      newElos <- seasonReset(oldSeason = seasonData, 
-                             newSeason = scores %>% filter(Season == seasons[s+1]))
+      newSeason <- scores %>% filter(Season == seasons[s+1])
+      newTeams <- unique(c(newSeason$A_TeamID, newSeason$B_TeamID))
       
-      eloStarts <- newElos$elo
+      newElos <- seasonReset(oldElos = elos %>% mutate(Season = seasonData$Season[1]),
+                             teamIDs = newTeams)
+      
+      eloStarts <- newElos %>% pull(elo)
     }
+    
+    # Progress bar update
+    pb$tick()
   }
   return(bind_rows(output))
 }
@@ -213,19 +206,25 @@ addElo <- function(scores, method = "NBA",
 fullElo1 <- addElo(scores = fullRaw1, 
                    eloStarts = 1500)
 
-# Note elos are drifting higher - not good for models, so fix it
-fullElo1 %>% 
-  group_by(Season) %>% summarize(Elo = mean(eloA))
+# Note elos are drifting higher - not good for models, so fix it using Nate Silver's 
+# advice of reducing MOV multiplier for heavier favorites: https://fivethirtyeight.com/methodology/how-our-nfl-predictions-work/
+fullElo1 %>% group_by(Season) %>% 
+  summarize(Avg = mean(eloA), Min = min(eloA), Max = max(eloA)) %>% 
+  pivot_longer(cols = Avg:Max, names_to = "Metric", values_to = "Value") %>% 
+  ggplot(aes(x = Season, y = Value, color = Metric)) + 
+  geom_line(aes(x = Season)) + labs(title = "Elo Across Seasons") + 
+  theme_bw()
 
 # Visualizing elo across season
-fullElo1 %>% ggplot(aes(y = eloA, x = DayNum, 
+fullElo1 %>% filter(Season > 2015) %>% ggplot(aes(y = eloA, x = DayNum, 
                         color = factor(A_TeamID))) + 
   geom_line() + facet_grid(rows = vars(Season)) +
-  theme(legend.position = "none")
+  labs(title = "Team Elos by Season", y = "Elo") + theme_bw() +
+  theme(legend.position = "none") 
 
 # Performance of calculated elo scores
 eloMod1 <- lm(Amov ~ 0 + eloA + eloB, 
-              data = full2003)
+              data = fullElo1)
 summary(eloMod1)$r.squared
 
 # Finding optimal k parameter
