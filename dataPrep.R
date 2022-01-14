@@ -6,10 +6,16 @@
 #################
 
 library(tidyverse)
+library(furrr)
 library(readr)
 library(progress)
 
+if(Sys.info()["sysname"] == "Darwin") {
+  setwd("/Volumes/GoogleDrive/My Drive/Other/Fun/March Madness")
+  stageDir <- "/Volumes/GoogleDrive/My Drive/Other/Fun/March Madness/2022/ncaam-march-mania-2021/MDataFiles_Stage1/"
+} else {
 stageDir <- "2022/ncaam-march-mania-2021/MDataFiles_Stage1/"
+}
 
 # Importing raw detailed box score data
 regRaw <- read_csv(paste0(stageDir, "MRegularSeasonDetailedResults.csv")) %>% 
@@ -104,8 +110,9 @@ seasonReset <- function(oldElos, teamIDs, center = mean, confer = confInfo) {
 # method: One of "NBA" or "NFL". Specifies smoothing method in elo update.
 # eloStarts: Optional. Scalar or vector of starting elo values for unique TeamID's
 # tau: Second smoothing parameter for elo calculation
-addElo <- function(scores, method = "NBA", 
-                   kVal = 10, eloStarts = 1500, tau = 0.006) {
+addElo <- function(scores, method = "NFL", 
+                   kVal = 45, eloStarts = 1500, tau = 0.006,
+                   centerFun = mean) {
   seasons <- unique(scores$Season)
   nSeasons <- length(seasons)
   output <- vector("list", nSeasons)
@@ -191,7 +198,7 @@ addElo <- function(scores, method = "NBA",
       newTeams <- unique(c(newSeason$A_TeamID, newSeason$B_TeamID))
       
       newElos <- seasonReset(oldElos = elos %>% mutate(Season = seasonData$Season[1]),
-                             teamIDs = newTeams)
+                             teamIDs = newTeams, center = centerFun)
       
       eloStarts <- newElos %>% pull(elo)
     }
@@ -202,9 +209,100 @@ addElo <- function(scores, method = "NBA",
   return(bind_rows(output))
 }
 
+# Grid of tuning arameters
+params <- expand.grid(kVal = seq(3, 60, by = 3),
+                      tau = 0.002,
+                      method = c("NFL"),
+                      centerName = c("mean", "median"))
+
+# Function for searching for optimal Elo parameters
+eloSim <- function(method, kVal = 45, tau, centerName) {
+  
+  if(centerName == "mean") {
+    centerFun <- mean
+  } else if(centerName == "median"){
+    centerFun <- median
+  }
+  
+  # Calculating elo values across all seasons
+  fullElo1 <- addElo(scores = fullRaw1, 
+                     eloStarts = 1500, 
+                     method = method, 
+                     kVal = kVal, tau = tau,
+                     centerFun = centerFun)
+  
+  # Full performance of calculated elo scores for MOV
+  eloMod1 <- lm(Amov ~ 0 + eloA + eloB, 
+                data = fullElo1)
+  r2Val <- summary(eloMod1)$r.squared
+  
+  # Later in season performance of calculated elo scores for MOV
+  eloModNew <- lm(Amov ~ 0 + eloA + eloB, 
+                data = fullElo1 %>% filter(DayNum >= 50))
+  r2ValNew <- summary(eloModNew)$r.squared
+  
+  # Binary win / loss response
+  eloShuffled <- fullElo1 %>% 
+    mutate(Awin2 = ifelse(Amov %% 2 == 0, FALSE, TRUE),
+           eloA2 = ifelse(Amov %% 2 == 0, eloB, eloA),
+           eloB2 = ifelse(Amov %% 2 == 0, eloA, eloB)) %>% 
+    select(DayNum, Awin2, eloA2, eloB2)
+  
+  # Full AIC
+  eloMod2 <- glm(Awin2 ~ 0 + eloA2 + eloB2, 
+                 data = eloShuffled, family = "binomial")
+  logisticAIC <- summary(eloMod2)$aic
+  
+  # Later in season AIC
+  eloMod2New <- glm(Awin2 ~ 0 + eloA2 + eloB2, 
+                 data = eloShuffled %>% filter(DayNum >= 50), family = "binomial")
+  logisticAICNew <- summary(eloMod2New)$aic
+  
+  return(data.frame(method = method, kVal = kVal, tau = tau,
+                    centerFun = centerName, r2 = r2Val, r2ValNew = r2ValNew,
+                    AIC = logisticAIC, logisticAICNew = logisticAICNew))
+}
+
+# Finding optimal tuning parameters
+plan(multisession, workers = 3)
+eloSimRes <- future_pmap_dfr(.l = params, .f = eloSim, .progress = TRUE)
+
+# Saving results
+saveRDS(eloSimRes, "2022/eloSimRes.rds")
+eloSimRes <- readRDS("2022/eloSimRes.rds")
+
+# Plotting results
+eloSimRes %>% pivot_longer(cols = r2:logisticAICNew, values_to = "Value",
+                           names_to = "Metric") %>% 
+  filter(centerFun == "mean") %>% ggplot(aes(x = kVal, y = Value, color = tau)) + 
+  geom_point() + facet_grid(Metric ~ method, scales = "free_y")
+
+# Table of optimal values
+eloSimRes %>% pivot_longer(cols = r2:logisticAICNew, values_to = "Value",
+                           names_to = "Metric") %>% 
+  mutate(Value = ifelse(Metric %in% c("r2", "r2ValNew"), Value, -Value)) %>% 
+  arrange(kVal) %>% group_by(centerFun, method, Metric) %>% slice_max(order_by = Value, n = 1, with_ties = FALSE)
+
 # Calculating elo values across all seasons
 fullElo1 <- addElo(scores = fullRaw1, 
                    eloStarts = 1500)
+
+# Performance of calculated elo scores
+eloMod1 <- lm(Amov ~ 0 + eloA + eloB, 
+              data = fullElo1)
+r2Val <- summary(eloMod1)$r.squared
+
+# Binary win / loss response
+eloShuffled <- fullElo1 %>% 
+  mutate(Awin2 = ifelse(Amov %% 2 == 0, FALSE, TRUE),
+         eloA2 = ifelse(Amov %% 2 == 0, eloB, eloA),
+         eloB2 = ifelse(Amov %% 2 == 0, eloA, eloB)) %>% 
+  select(Awin2, eloA2, eloB2)
+
+eloMod2 <- glm(Awin2 ~ 0 + eloA2 + eloB2, 
+              data = eloShuffled, family = "binomial")
+
+logisticAIC <- summary(eloMod2)$aic
 
 # Note elos are drifting higher - not good for models, so fix it using Nate Silver's 
 # advice of reducing MOV multiplier for heavier favorites: https://fivethirtyeight.com/methodology/how-our-nfl-predictions-work/
@@ -217,15 +315,10 @@ fullElo1 %>% group_by(Season) %>%
 
 # Visualizing elo across season
 fullElo1 %>% filter(Season > 2015) %>% ggplot(aes(y = eloA, x = DayNum, 
-                        color = factor(A_TeamID))) + 
+                                                  color = factor(A_TeamID))) + 
   geom_line() + facet_grid(rows = vars(Season)) +
   labs(title = "Team Elos by Season", y = "Elo") + theme_bw() +
   theme(legend.position = "none") 
-
-# Performance of calculated elo scores
-eloMod1 <- lm(Amov ~ 0 + eloA + eloB, 
-              data = fullElo1)
-summary(eloMod1)$r.squared
 
 # Finding optimal k parameter
 results %>% pivot_longer(cols = c(mod1, mod2), values_to = "rsq") %>% 
