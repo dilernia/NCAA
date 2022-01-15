@@ -80,7 +80,8 @@ eloUpdate <- function(elo, pred, actual, k = 20) {
 
 # Function to reset team elos to average of 
 # previous season and conference average
-seasonReset <- function(oldElos, teamIDs, center = mean, confer = confInfo) {
+seasonReset <- function(oldElos, teamIDs, center = mean, 
+                        confer = confInfo) {
   
   # Conference average elos
   conf <- confer %>% filter(Season == oldElos$Season[1])
@@ -113,6 +114,10 @@ seasonReset <- function(oldElos, teamIDs, center = mean, confer = confInfo) {
 addElo <- function(scores, method = "NFL", 
                    kVal = 45, eloStarts = 1500, tau = 0.006,
                    centerFun = mean) {
+  
+  # Sorting rows to start
+  scores <- scores %>% arrange(Season, DayNum)
+  
   seasons <- unique(scores$Season)
   nSeasons <- length(seasons)
   output <- vector("list", nSeasons)
@@ -209,6 +214,8 @@ addElo <- function(scores, method = "NFL",
   return(bind_rows(output))
 }
 
+runSim <- FALSE
+
 # Grid of tuning arameters
 params <- expand.grid(kVal = seq(3, 60, by = 3),
                       tau = 0.002,
@@ -263,13 +270,14 @@ eloSim <- function(method, kVal = 45, tau, centerName) {
                     AIC = logisticAIC, logisticAICNew = logisticAICNew))
 }
 
+if(runSim == TRUE) {
 # Finding optimal tuning parameters
 plan(multisession, workers = 3)
 eloSimRes <- future_pmap_dfr(.l = params, .f = eloSim, .progress = TRUE)
 
 # Saving results
 saveRDS(eloSimRes, "2022/eloSimRes.rds")
-eloSimRes <- readRDS("2022/eloSimRes.rds")
+eloSimRes <- readRDS("2022/eloSimRes_01-14-2022.rds")
 
 # Plotting results
 eloSimRes %>% pivot_longer(cols = r2:logisticAICNew, values_to = "Value",
@@ -282,10 +290,11 @@ eloSimRes %>% pivot_longer(cols = r2:logisticAICNew, values_to = "Value",
                            names_to = "Metric") %>% 
   mutate(Value = ifelse(Metric %in% c("r2", "r2ValNew"), Value, -Value)) %>% 
   arrange(kVal) %>% group_by(centerFun, method, Metric) %>% slice_max(order_by = Value, n = 1, with_ties = FALSE)
+}
 
 # Calculating elo values across all seasons
-fullElo1 <- addElo(scores = fullRaw1, 
-                   eloStarts = 1500)
+fullElo1 <- addElo(scores = fullRaw1, method = "NFL", kVal = 45,
+                   eloStarts = 1500, centerFun = mean)
 
 # Performance of calculated elo scores
 eloMod1 <- lm(Amov ~ 0 + eloA + eloB, 
@@ -304,7 +313,7 @@ eloMod2 <- glm(Awin2 ~ 0 + eloA2 + eloB2,
 
 logisticAIC <- summary(eloMod2)$aic
 
-# Note elos are drifting higher - not good for models, so fix it using Nate Silver's 
+# Fixed elos drifting higher using Nate Silver's 
 # advice of reducing MOV multiplier for heavier favorites: https://fivethirtyeight.com/methodology/how-our-nfl-predictions-work/
 fullElo1 %>% group_by(Season) %>% 
   summarize(Avg = mean(eloA), Min = min(eloA), Max = max(eloA)) %>% 
@@ -319,11 +328,6 @@ fullElo1 %>% filter(Season > 2015) %>% ggplot(aes(y = eloA, x = DayNum,
   geom_line() + facet_grid(rows = vars(Season)) +
   labs(title = "Team Elos by Season", y = "Elo") + theme_bw() +
   theme(legend.position = "none") 
-
-# Finding optimal k parameter
-results %>% pivot_longer(cols = c(mod1, mod2), values_to = "rsq") %>% 
-  ggplot(aes(x = k, y = rsq, color = name)) + geom_point() +
-  geom_line(se = FALSE) + labs()
 
 # Rolling Team Statistics -------------------------------------------------
 
