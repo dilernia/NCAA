@@ -10,6 +10,8 @@ library(furrr)
 library(readr)
 library(progress)
 
+t1 <- Sys.time()
+
 if(Sys.info()["sysname"] == "Darwin") {
   setwd("/Volumes/GoogleDrive/My Drive/Other/Fun/March Madness")
   stageDir <- "/Volumes/GoogleDrive/My Drive/Other/Fun/March Madness/2022/ncaam-march-mania-2021/MDataFiles_Stage1/"
@@ -29,7 +31,8 @@ confInfo <- read_csv(paste0(stageDir, "MTeamConferences.csv")) %>%
   rename(Conference = Description) %>% select(Season, TeamID, Conference)
 
 # Merging tournament and regular season data 
-# and adding conference info
+# and adding conference info & possession column
+# POSS calculation from https://thepowerrank.com/cbb-analytics/
 fullRaw <- bind_rows(regRaw, tourneyRaw) %>% 
   mutate(LLoc = case_when(WLoc == "H" ~ "A",
                               WLoc == "A" ~ "H",
@@ -41,7 +44,9 @@ fullRaw <- bind_rows(regRaw, tourneyRaw) %>%
             by = c("Season" = "Season", "LTeamID" = "TeamID")) %>% 
   rename(WConference = ConferenceW, LConference = ConferenceL) %>%
   arrange(Season, DayNum, WTeamID) %>% 
-  mutate(GameID = row_number(), Amov = WScore - LScore)
+  mutate(WPoss = ((WFGA - WOR + WTO + (0.475 * WFTA)) + 
+                  (LFGA - LOR + LTO + (0.475 * LFTA))) / 2,
+         LPoss = WPoss, GameID = row_number(), Afix_mov = WScore - LScore,)
 
 # Creating duplicate rows to be agnostic to team winning or not
 # and allow calculating rolling statistics
@@ -50,14 +55,23 @@ fullRaw1 <- fullRaw %>%
             fixed = TRUE), .cols = starts_with("L")) %>% 
   rename_with(.fn =  ~ gsub("_W", "A_", paste0("_", .x),
             fixed = TRUE), .cols = starts_with("W")) %>%
-  mutate(Awin = TRUE) %>% arrange(GameID)
+  mutate(Afix_win = TRUE) %>% 
+  rename_with(.fn =  ~ gsub("A_", "Afix_", .x,
+      fixed = TRUE), .cols = c(A_TeamID, A_Loc, A_Conference)) %>% 
+  rename_with(.fn =  ~ gsub("B_", "Bfix_", .x,
+      fixed = TRUE), .cols = c(B_TeamID, B_Loc, B_Conference)) %>% 
+  arrange(GameID)
 
 fullRaw2 <- fullRaw %>% 
-  rename_with(.fn =  ~ gsub("_W", "B_", paste0("_", .x),
-              fixed = TRUE), .cols = starts_with("W")) %>% 
-  rename_with(.fn =  ~ gsub("_L", "A_", paste0("_", .x), 
-              fixed = TRUE), .cols = starts_with("L")) %>% 
-  mutate(Awin = FALSE) %>% select(colnames(fullRaw1)) %>% 
+rename_with(.fn =  ~ gsub("_W", "B_", paste0("_", .x),
+                          fixed = TRUE), .cols = starts_with("W")) %>% 
+  rename_with(.fn =  ~ gsub("_L", "A_", paste0("_", .x),
+                            fixed = TRUE), .cols = starts_with("L")) %>%
+  mutate(Afix_win = TRUE) %>% 
+  rename_with(.fn =  ~ gsub("A_", "Afix_", .x,
+                            fixed = TRUE), .cols = c(A_TeamID, A_Loc, A_Conference)) %>% 
+  rename_with(.fn =  ~ gsub("B_", "Bfix_", .x,
+                            fixed = TRUE), .cols = c(B_TeamID, B_Loc, B_Conference)) %>% 
   arrange(GameID)
 
 # Elo Ratings -------------------------------------------------------------
@@ -107,8 +121,8 @@ seasonReset <- function(oldElos, teamIDs, center = mean,
 }
 
 # Function for adding elo values to data frame
-# scores: A data frame with columns Season, A_TeamID,
-# B_TeamID, A_Loc, Amov, Awin
+# scores: A data frame with columns Season, Afix_TeamID,
+# Bfix_TeamID, Afix_Loc, Afix_mov, Afix_win
 # kVal: Smoothing parameter for elo calculation
 # method: One of "NBA" or "NFL". Specifies smoothing method in elo update.
 # eloStarts: Optional. Scalar or vector of starting elo values for unique TeamID's
@@ -128,44 +142,44 @@ addElo <- function(scores, method = "NFL",
   
   for(s in 1:nSeasons) {
     seasonData <- scores %>% filter(Season == seasons[s])
-    teamIDs <- unique(c(seasonData$A_TeamID, 
-                        seasonData$B_TeamID))
+    teamIDs <- unique(c(seasonData$Afix_TeamID, 
+                        seasonData$Bfix_TeamID))
     
-    homes <- ifelse(seasonData$A_Loc == "N", 0,
-                    ifelse(seasonData$A_Loc == "A", -1,
-                           ifelse(seasonData$A_Loc == "H", 1, NA)))
+    homes <- ifelse(seasonData$Afix_Loc == "N", 0,
+                    ifelse(seasonData$Afix_Loc == "A", -1,
+                           ifelse(seasonData$Afix_Loc == "H", 1, NA)))
     
-    mmNumerator <- sqrt(seasonData$Amov)
-    Awin10 <- ifelse(seasonData$Awin, 1, 0)
+    mmNumerator <- sqrt(seasonData$Afix_mov)
+    Afix_win10 <- ifelse(seasonData$Afix_win, 1, 0)
     
     elos <- data.frame(team = teamIDs, elo = 1500)
     
     # Initialize elo columns
     seasonData <- seasonData %>% 
-      mutate(A_elo = 1500, B_elo = 1500)
+      mutate(Afix_elo = 1500, Bfix_elo = 1500)
     elos <- data.frame(team = teamIDs, elo = eloStarts)
     
     if(method == "NBA") {
       for(i in 1:nrow(seasonData)) {
         # Storing current elo values
-        Ainds <- elos$team == seasonData$A_TeamID[i]
-        Binds <- elos$team == seasonData$B_TeamID[i]
-        seasonData$A_elo[i] <- elos$elo[Ainds]
-        seasonData$B_elo[i] <- elos$elo[Binds]
+        Ainds <- elos$team == seasonData$Afix_TeamID[i]
+        Binds <- elos$team == seasonData$Bfix_TeamID[i]
+        seasonData$Afix_elo[i] <- elos$elo[Ainds]
+        seasonData$Bfix_elo[i] <- elos$elo[Binds]
         
         # Elo prediction
-        pred <- eloPred(elo1 = seasonData$A_elo[i],
-                        elo2 = seasonData$B_elo[i], 
+        pred <- eloPred(elo1 = seasonData$Afix_elo[i],
+                        elo2 = seasonData$Bfix_elo[i], 
                         home = homes[i])
         
         # Margin of victory multipliers
         movMultiA <- mmNumerator[i] /
-          (7.5 + tau*(seasonData$A_elo[i] - seasonData$B_elo[i]))
+          (7.5 + tau*(seasonData$Afix_elo[i] - seasonData$Bfix_elo[i]))
         
         # Calculating new elo values
-        newA <- eloUpdate(elo = seasonData$A_elo[i], pred = pred,
-                          actual = Awin10[i], k = movMultiA*kVal)
-        newB <- seasonData$B_elo[i] - (newA - seasonData$A_elo[i])
+        newA <- eloUpdate(elo = seasonData$Afix_elo[i], pred = pred,
+                          actual = Afix_win10[i], k = movMultiA*kVal)
+        newB <- seasonData$Bfix_elo[i] - (newA - seasonData$Afix_elo[i])
         
         # Updating elo values
         elos$elo[Ainds] <- newA
@@ -173,24 +187,24 @@ addElo <- function(scores, method = "NFL",
       }
     } else if(method == "NFL"){
       
-      ks <- kVal*log(1 + abs(seasonData$Amov))
+      ks <- kVal*log(1 + abs(seasonData$Afix_mov))
       
       for(i in 1:nrow(seasonData)) {
         # Storing current elo values
-        Ainds <- elos$team == seasonData$A_TeamID[i]
-        Binds <- elos$team == seasonData$B_TeamID[i]
-        seasonData$A_elo[i] <- elos$elo[Ainds]
-        seasonData$B_elo[i] <- elos$elo[Binds]
+        Ainds <- elos$team == seasonData$Afix_TeamID[i]
+        Binds <- elos$team == seasonData$Bfix_TeamID[i]
+        seasonData$Afix_elo[i] <- elos$elo[Ainds]
+        seasonData$Bfix_elo[i] <- elos$elo[Binds]
         
         # Elo prediction
-        pred <- eloPred(elo1 = seasonData$A_elo[i],
-                        elo2 = seasonData$B_elo[i], 
+        pred <- eloPred(elo1 = seasonData$Afix_elo[i],
+                        elo2 = seasonData$Bfix_elo[i], 
                         home = homes[i])
         
         # Calculating new elo values
-        newA <- eloUpdate(elo = seasonData$A_elo[i], pred = pred,
-                          actual = Awin10[i], k = ks[i])
-        newB <- seasonData$B_elo[i] - (newA - seasonData$A_elo[i])
+        newA <- eloUpdate(elo = seasonData$Afix_elo[i], pred = pred,
+                          actual = Afix_win10[i], k = ks[i])
+        newB <- seasonData$Bfix_elo[i] - (newA - seasonData$Afix_elo[i])
         
         # Updating elo values
         elos$elo[Ainds] <- newA
@@ -202,7 +216,7 @@ addElo <- function(scores, method = "NFL",
     
     if(s < nSeasons) {
       newSeason <- scores %>% filter(Season == seasons[s+1])
-      newTeams <- unique(c(newSeason$A_TeamID, newSeason$B_TeamID))
+      newTeams <- unique(c(newSeason$Afix_TeamID, newSeason$Bfix_TeamID))
       
       newElos <- seasonReset(oldElos = elos %>% mutate(Season = seasonData$Season[1]),
                              teamIDs = newTeams, center = centerFun)
@@ -235,29 +249,29 @@ eloSim <- function(method, kVal = 45, tau, centerName) {
                      centerFun = centerFun)
   
   # Full performance of calculated elo scores for MOV
-  eloMod1 <- lm(Amov ~ 0 + A_elo + B_elo, 
+  eloMod1 <- lm(Afix_mov ~ 0 + Afix_elo + Bfix_elo, 
                 data = fullElo1)
   r2Val <- summary(eloMod1)$r.squared
   
   # Later in season performance of calculated elo scores for MOV
-  eloModNew <- lm(Amov ~ 0 + A_elo + B_elo, 
+  eloModNew <- lm(Afix_mov ~ 0 + Afix_elo + Bfix_elo, 
                 data = fullElo1 %>% filter(DayNum >= 50))
   r2ValNew <- summary(eloModNew)$r.squared
   
   # Binary win / loss response
   eloShuffled <- fullElo1 %>% 
-    mutate(Awin2 = ifelse(Amov %% 2 == 0, FALSE, TRUE),
-           A_elo2 = ifelse(Amov %% 2 == 0, B_elo, A_elo),
-           B_elo2 = ifelse(Amov %% 2 == 0, A_elo, B_elo)) %>% 
-    select(DayNum, Awin2, A_elo2, B_elo2)
+    mutate(Afix_win2 = ifelse(Afix_mov %% 2 == 0, FALSE, TRUE),
+           Afix_elo2 = ifelse(Afix_mov %% 2 == 0, Bfix_elo, Afix_elo),
+           Bfix_elo2 = ifelse(Afix_mov %% 2 == 0, Afix_elo, Bfix_elo)) %>% 
+    select(DayNum, Afix_win2, Afix_elo2, Bfix_elo2)
   
   # Full AIC
-  eloMod2 <- glm(Awin2 ~ 0 + A_elo2 + B_elo2, 
+  eloMod2 <- glm(Afix_win2 ~ 0 + Afix_elo2 + Bfix_elo2, 
                  data = eloShuffled, family = "binomial")
   logisticAIC <- summary(eloMod2)$aic
   
   # Later in season AIC
-  eloMod2New <- glm(Awin2 ~ 0 + A_elo2 + B_elo2, 
+  eloMod2New <- glm(Afix_win2 ~ 0 + Afix_elo2 + Bfix_elo2, 
                  data = eloShuffled %>% filter(DayNum >= 50), family = "binomial")
   logisticAICNew <- summary(eloMod2New)$aic
   
@@ -300,18 +314,18 @@ fullElo1 <- addElo(scores = fullRaw1, method = "NFL", kVal = 45,
                    eloStarts = 1500, centerFun = mean)
 
 # Performance of calculated elo scores
-eloMod1 <- lm(Amov ~ 0 + A_elo + B_elo, 
+eloMod1 <- lm(Afix_mov ~ 0 + Afix_elo + Bfix_elo, 
               data = fullElo1)
 r2Val <- summary(eloMod1)$r.squared
 
 # Binary win / loss response
 eloShuffled <- fullElo1 %>% 
-  mutate(Awin2 = ifelse(Amov %% 2 == 0, FALSE, TRUE),
-         A_elo2 = ifelse(Amov %% 2 == 0, B_elo, A_elo),
-         B_elo2 = ifelse(Amov %% 2 == 0, A_elo, B_elo)) %>% 
-  select(Awin2, A_elo2, B_elo2)
+  mutate(Afix_win2 = ifelse(Afix_mov %% 2 == 0, FALSE, TRUE),
+         Afix_elo2 = ifelse(Afix_mov %% 2 == 0, Bfix_elo, Afix_elo),
+         Bfix_elo2 = ifelse(Afix_mov %% 2 == 0, Afix_elo, Bfix_elo)) %>% 
+  select(Afix_win2, Afix_elo2, Bfix_elo2)
 
-eloMod2 <- glm(Awin2 ~ 0 + A_elo2 + B_elo2, 
+eloMod2 <- glm(Afix_win2 ~ 0 + Afix_elo2 + Bfix_elo2, 
               data = eloShuffled, family = "binomial")
 
 logisticAIC <- summary(eloMod2)$aic
@@ -319,57 +333,64 @@ logisticAIC <- summary(eloMod2)$aic
 # Fixed elos drifting higher using Nate Silver's 
 # advice of reducing MOV multiplier for heavier favorites: https://fivethirtyeight.com/methodology/how-our-nfl-predictions-work/
 fullElo1 %>% group_by(Season) %>% 
-  summarize(Avg = mean(A_elo), Min = min(A_elo), Max = max(A_elo)) %>% 
+  summarize(Avg = mean(Afix_elo), Min = min(Afix_elo), Max = max(Afix_elo)) %>% 
   pivot_longer(cols = Avg:Max, names_to = "Metric", values_to = "Value") %>% 
   ggplot(aes(x = Season, y = Value, color = Metric)) + 
   geom_line(aes(x = Season)) + labs(title = "Elo Across Seasons") + 
   theme_bw()
 
 # Visualizing elo across season
-fullElo1 %>% filter(Season > 2015) %>% ggplot(aes(y = A_elo, x = DayNum, 
-                                                  color = factor(A_TeamID))) + 
+fullElo1 %>% filter(Season > 2015) %>% ggplot(aes(y = Afix_elo, x = DayNum, 
+                                                  color = factor(Afix_TeamID))) + 
   geom_line() + facet_grid(rows = vars(Season)) +
   labs(title = "Team Elos by Season", y = "Elo") + theme_bw() +
   theme(legend.position = "none") 
 
 # Rolling Team Statistics -------------------------------------------------
 
-fullElo2 <- fullRaw2 %>% mutate(A_elo = fullElo1$B_elo,
-                                B_elo = fullElo1$A_elo)
+fullElo2 <- fullRaw2 %>% mutate(Afix_elo = fullElo1$Bfix_elo,
+                                Bfix_elo = fullElo1$Afix_elo)
 
 # Need statistics recorded as rates FOR and AGAINST Team's A and B for each game
 
 # Combine into single data set with 2 rows for each game; 
 # 1 where loser is Team A and 1 where loser is Team B
-# and calculate stats prior to each game
-longElo <- bind_rows(fullElo1, fullElo2) %>% 
-  arrange(Season, DayNum, A_TeamID) %>% 
-    group_by(Season, A_TeamID) %>% mutate(count = seq(n()), 
-         across(.cols = c(A_Score:B_Score, A_FGM:B_PF),
+longElo <- map_dfr(.x = list(fullElo1, fullElo2), .f = function(x) {
+  x %>% arrange(Season, DayNum, Afix_TeamID) %>% 
+    group_by(Season, Afix_TeamID) %>% mutate(count = seq(n()), 
+         across(.cols = starts_with(c("A_", "B_")),
                 .fns = cumsum)) %>% 
-  mutate(across(.cols = c(A_Score:B_Score, A_FGM:B_PF),
+  mutate(across(.cols = starts_with(c("A_", "B_")),
                 .fns = ~ .x / count)) %>% 
-  select(Season:B_TeamID, GameID, count, Awin, Amov, 
-         A_Loc, A_elo, B_elo, A_Conference, B_Conference,
-         everything(), -B_Loc)
+  select(Season, DayNum, GameID, count, starts_with(c("Afix_", "Bfix_")),
+         starts_with(c("A_", "B_")), -Bfix_Loc)
+})
 
 # Including both 'for' and 'against' info for each game, rather than just 'for'
-wideElo <- longElo %>% filter(Awin == TRUE) %>% 
-  rename_with(.fn =  ~ gsub("A_", "for_", .x,
-                            fixed = TRUE), .cols = c(A_Score, A_FGM:A_PF)) %>% 
-  rename_with(.fn =  ~ gsub("B_", "against_", .x,
-                            fixed = TRUE), .cols = c(B_Score, B_FGM:B_PF)) %>% 
-  arrange(GameID) %>% ungroup() %>% 
-  full_join(longElo %>% filter(Awin == FALSE) %>% 
-            rename_with(.fn =  ~ gsub("A_", "for_", .x,
-            fixed = TRUE), .cols = c(A_Score, A_FGM:A_PF)) %>% 
-            rename_with(.fn =  ~ gsub("B_", "against_", .x,
-            fixed = TRUE), .cols = c(B_Score, B_FGM:B_PF)) %>% 
-            arrange(GameID) %>% ungroup() %>% select(-c(Season:B_TeamID, Awin:B_Conference)) 
-            , suffix = c("-A", "-B"), by = c("GameID")) %>% 
-  rename_with(.fn =  ~ gsub("-A", "", paste0("A_", .x),
-                            fixed = TRUE), .cols = ends_with("-A")) %>% 
-  rename_with(.fn =  ~ gsub("-B", "", paste0("B_", .x),
-                            fixed = TRUE), .cols = ends_with("-B")) %>% 
-  select(Season:A_count, B_count, everything())
-  
+wideElo <- longElo %>% group_by(GameID) %>% slice(1) %>% 
+  rename_with(.fn =  ~ gsub("A_", "A_for_", .x,
+                            fixed = TRUE), .cols = starts_with("A_")) %>% 
+  rename_with(.fn =  ~ gsub("B_", "A_against_", .x,
+                            fixed = TRUE), .cols = starts_with("B_")) %>% 
+  rename(countA = count) %>% 
+  ungroup() %>% mutate(across(starts_with(c("A_", "B_")), ~ lag(.x))) %>% 
+  arrange(GameID) %>% bind_cols(longElo %>% group_by(GameID) %>% slice(2) %>% 
+              rename_with(.fn =  ~ gsub("A_", "B_for_", .x,
+                    fixed = TRUE), .cols = starts_with("A_")) %>% 
+              rename_with(.fn =  ~ gsub("B_", "B_against_", .x,
+                    fixed = TRUE), .cols = starts_with("B_")) %>% 
+              ungroup() %>% mutate(across(starts_with(c("A_", "B_")), ~ lag(.x))) %>% 
+              rename(countB = count) %>% arrange(GameID) %>% 
+              select(-c("GameID", "Season", "DayNum", contains("fix_"))))
+
+# Removing first G games of the season for each team
+# e.g., G=1 means exclude games where it is any teams first game of season
+G <- 1
+smallWideElo <- wideElo %>% filter(countA > G, countB > G)
+
+summary(glm(Afix_mov ~ Afix_elo + Bfix_elo, 
+            family = "gaussian", data = smallWideElo))
+
+t2 <- Sys.time()
+
+t2 - t1
