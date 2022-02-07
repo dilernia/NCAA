@@ -375,13 +375,14 @@ wideElo <- longElo %>% group_by(GameID) %>% slice(1) %>%
   rename(countA = count) %>% 
   ungroup() %>% mutate(across(starts_with(c("A_", "B_")), ~ lag(.x))) %>% 
   arrange(GameID) %>% bind_cols(longElo %>% group_by(GameID) %>% slice(2) %>% 
-              rename_with(.fn =  ~ gsub("A_", "B_for_", .x,
-                    fixed = TRUE), .cols = starts_with("A_")) %>% 
-              rename_with(.fn =  ~ gsub("B_", "B_against_", .x,
-                    fixed = TRUE), .cols = starts_with("B_")) %>% 
-              ungroup() %>% mutate(across(starts_with(c("A_", "B_")), ~ lag(.x))) %>% 
-              rename(countB = count) %>% arrange(GameID) %>% 
-              select(-c("GameID", "Season", "DayNum", contains("fix_"))))
+                                  rename_with(.fn =  ~ gsub("B_", "B_against_", .x,
+                                                            fixed = TRUE), .cols = starts_with("B_")) %>% 
+                                  rename_with(.fn =  ~ gsub("A_", "B_for_", .x,
+                                                            fixed = TRUE), .cols = starts_with("A_")) %>% 
+                                  ungroup() %>% mutate(across(starts_with(c("A_", "B_")), ~ lag(.x))) %>% 
+                                  rename(countB = count) %>% arrange(GameID) %>% 
+                                  select(-c("GameID", "Season", "DayNum", contains("fix_"))))
+
 
 # Removing first G games of the season for each team
 # e.g., G=1 means exclude games where it is any teams first game of season
@@ -394,3 +395,65 @@ summary(glm(Afix_mov ~ Afix_elo + Bfix_elo,
 t2 <- Sys.time()
 
 t2 - t1
+
+# Massey Ordinal Rankings -------------------------------------------------
+
+# Adding in Massey ordinal ranking data
+# Descriptions / info for systems: https://masseyratings.com/cb/compare.htm
+massey <- data.table::fread(paste0(stageDir, "MMasseyOrdinals.csv")) %>% 
+  as.data.frame() %>% rename(DayNum = RankingDayNum) 
+
+# Exploring which systems have collective most complete data
+# The `values_fn` option keeps first ranking when multiple for single day provided.
+# Filling down so ratings carry forward if provided day before game or so
+# Names from https://masseyratings.com/cb/compare.htm
+wideMassey <- massey %>% pivot_wider(id_cols = c(Season, DayNum, TeamID, SystemName), 
+                                     names_from = SystemName, values_from = OrdinalRank, values_fill = NA, 
+                                     values_fn = function(x){x[1]}) %>% 
+  arrange(Season, DayNum) %>% group_by(Season, TeamID) %>% 
+  fill(SEL:REI, .direction = "down") %>% ungroup() %>% 
+  mutate(SystemName = case_when(SystemName == "MOR" ~ "Moore",
+                                SystemName == "PGH" ~ "Pugh",
+                                SystemName == "DOK" ~ "Dokter Entropy",
+                                SystemName == "SAG" ~ "Sagarin",
+                                SystemName == "MAS" ~ "Massey",
+                                SystemName == "POM" ~ "Pomeroy ",
+                                SystemName == "WIL" ~ "Wilson ",
+                                TRUE ~ SystemName))
+
+# Since 2010 and later, POM, MOR, SAG, PGH appear to have most pairwise complete obs
+wideMassey %>% filter(Season >= 2010) %>% map_int(.f = function(x){sum(!is.na(x))}) %>% 
+  sort(decreasing = TRUE) %>% as.data.frame()
+
+(wideMassey %>% filter(Season >= 2010) %>% 
+    select(Season, DayNum, TeamID, POM, MOR, SAG, MAS) %>% drop_na() %>% nrow())
+
+completeMassey <- smallWideElo %>% select(Season, DayNum) %>% 
+  distinct() %>% left_join(wideMassey %>% group_by(Season) %>% 
+                             select(Season:TeamID) %>% expand_grid() %>% 
+                             ungroup())
+
+# Adding in pre-season AP rank as a fixed predictor for each team in each season 
+# as suggested by 538
+startDays <- wideMassey %>% select(Season, DayNum, TeamID, AP) %>% 
+  drop_na() %>% group_by(Season) %>% summarize(DayNum = min(DayNum))
+
+apStarts <- startDays %>% left_join(wideMassey %>% select(Season, DayNum, TeamID, AP))
+
+# Using elo to impute for AP rankings greater than 25 (as per 538)
+apImpute <- apStarts %>% select(-DayNum) %>% drop_na() %>% 
+  left_join(fullElo1 %>% select(Season:Afix_TeamID, Afix_elo) %>% 
+              rename(TeamID = Afix_TeamID) %>% 
+        group_by(Season, TeamID) %>% slice(1) %>% ungroup()) %>% 
+  group_by(Season, TeamID) %>% arrange(DayNum) %>% 
+  tidyr::fill(Afix_elo, .direction = "updown") %>% filter(!is.na(AP))
+
+# Model for imputing AP ranks
+apMod <- lm(AP ~ Afix_elo, data = apImpute)
+
+apStartsFull <- apStarts %>% full_join(fullElo1 %>% 
+                                       select(Season:Afix_TeamID, Afix_elo) %>% rename(TeamID = Afix_TeamID) %>% 
+                                       group_by(Season, TeamID) %>% slice(1) %>% ungroup())
+
+wideMassey %>% select(Season, DayNum, TeamID, AP) %>% drop_na() %>% 
+  group_by(Season, TeamID) %>% slice(1) %>% ungroup()
