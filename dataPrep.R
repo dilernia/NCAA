@@ -381,16 +381,17 @@ wideElo <- longElo %>% group_by(GameID) %>% slice(1) %>%
                                                             fixed = TRUE), .cols = starts_with("A_")) %>% 
                                   ungroup() %>% mutate(across(starts_with(c("A_", "B_")), ~ lag(.x))) %>% 
                                   rename(countB = count) %>% arrange(GameID) %>% 
-                                  select(-c("GameID", "Season", "DayNum", contains("fix_"))))
+                                  select(-c("GameID", "Season", "DayNum", contains("fix_")))) %>% 
+  rename(Afix_count = countA, Bfix_count = countB)
 
 
 # Removing first G games of the season for each team
 # e.g., G=1 means exclude games where it is any teams first game of season
 G <- 1
-smallWideElo <- wideElo %>% filter(countA > G, countB > G)
+smallWideElo <- wideElo %>% filter(Afix_count > G, Bfix_count > G)
 
-summary(glm(Afix_mov ~ Afix_elo + Bfix_elo, 
-            family = "gaussian", data = smallWideElo))
+summary(lm(Afix_mov ~ Afix_elo + Bfix_elo, 
+            data = smallWideElo))
 
 t2 <- Sys.time()
 
@@ -407,31 +408,75 @@ massey <- data.table::fread(paste0(stageDir, "MMasseyOrdinals.csv")) %>%
 # The `values_fn` option keeps first ranking when multiple for single day provided.
 # Filling down so ratings carry forward if provided day before game or so
 # Names from https://masseyratings.com/cb/compare.htm
-wideMassey <- massey %>% pivot_wider(id_cols = c(Season, DayNum, TeamID, SystemName), 
-                                     names_from = SystemName, values_from = OrdinalRank, values_fill = NA, 
-                                     values_fn = function(x){x[1]}) %>% 
-  arrange(Season, DayNum) %>% group_by(Season, TeamID) %>% 
-  fill(SEL:REI, .direction = "down") %>% ungroup() %>% 
+wideMassey <- massey %>% 
   mutate(SystemName = case_when(SystemName == "MOR" ~ "Moore",
-                                SystemName == "PGH" ~ "Pugh",
-                                SystemName == "DOK" ~ "Dokter Entropy",
                                 SystemName == "SAG" ~ "Sagarin",
                                 SystemName == "MAS" ~ "Massey",
-                                SystemName == "POM" ~ "Pomeroy ",
-                                SystemName == "WIL" ~ "Wilson ",
-                                TRUE ~ SystemName))
+                                SystemName == "POM" ~ "Pomeroy",
+                                TRUE ~ SystemName)) %>% 
+  pivot_wider(id_cols = c(Season, DayNum, TeamID, SystemName), 
+              names_from = SystemName, values_from = OrdinalRank, values_fill = NA, 
+              values_fn = function(x){x[1]}) %>% 
+  arrange(Season, DayNum) %>% group_by(Season, TeamID) %>% 
+  fill(SEL:REI, .direction = "down") %>% ungroup()
 
 # Since 2010 and later, POM, MOR, SAG, PGH appear to have most pairwise complete obs
 wideMassey %>% filter(Season >= 2010) %>% map_int(.f = function(x){sum(!is.na(x))}) %>% 
   sort(decreasing = TRUE) %>% as.data.frame()
 
 (wideMassey %>% filter(Season >= 2010) %>% 
-    select(Season, DayNum, TeamID, POM, MOR, SAG, MAS) %>% drop_na() %>% nrow())
+    select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% drop_na() %>% nrow())
 
 completeMassey <- smallWideElo %>% select(Season, DayNum) %>% 
   distinct() %>% left_join(wideMassey %>% group_by(Season) %>% 
                              select(Season:TeamID) %>% expand_grid() %>% 
                              ungroup())
+
+# Adding ordinal ratings to box scores and elo data
+# Carry last rating forward for each team in each season via the fill function
+eloMassey <- smallWideElo %>% full_join(wideMassey %>% 
+            select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey),
+            by = c("Season" = "Season", "DayNum" = "DayNum",
+                   "Afix_TeamID" = "TeamID")) %>% 
+  rename(Afix_Pomeroy = Pomeroy, Afix_Moore = Moore, 
+         Afix_Sagarin = Sagarin, Afix_Massey = Massey) %>% 
+  full_join(wideMassey %>% 
+              select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey),
+            by = c("Season" = "Season", "DayNum" = "DayNum",
+                   "Bfix_TeamID" = "TeamID")) %>% 
+  rename(Bfix_Pomeroy = Pomeroy, Bfix_Moore = Moore, 
+         Bfix_Sagarin = Sagarin, Bfix_Massey = Massey) %>% 
+  arrange(Season, DayNum) %>% group_by(Season, Afix_TeamID) %>% 
+  tidyr::fill(c(Afix_Pomeroy, Afix_Moore, Afix_Sagarin, Afix_Massey), .direction = "down") %>% 
+  ungroup() %>% group_by(Season, Bfix_TeamID) %>% 
+  tidyr::fill(c(Bfix_Pomeroy, Bfix_Moore, Bfix_Sagarin, Bfix_Massey), .direction = "down") %>% 
+  ungroup() %>% drop_na()
+
+# Testing to see if columns seem reasonable
+
+# Randomly selecting some games to have Team A lose
+eloMasseyMix <- eloMassey %>% filter(Afix_mov %% 2 == 1) %>% 
+  rename_with(.fn =  ~ str_replace_all(string = .x, c("Afix_" = "Xfix_", "A_" = "X_",
+                                                      "Bfix_" = "Yfix_", "B_" = "Y_")),
+              .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc"))) %>% 
+  bind_rows(eloMassey %>% filter(Afix_mov %% 2 == 0) %>% 
+              mutate(Afix_mov = -Afix_mov, Afix_win = !Afix_win,
+                     Afix_Loc = case_when(Afix_Loc == "A" ~ "H",
+                                          Afix_Loc == "H" ~ "A",
+                                          TRUE ~ Afix_Loc)) %>% 
+              rename_with(.fn =  ~ str_replace_all(string = .x, c("Bfix_" = "Xfix_", "B_" = "X_",
+                                                                  "Afix_" = "Yfix_", "A_" = "Y_")),
+                          .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc")))) %>% 
+  rename_with(.fn =  ~ str_replace_all(string = .x, c("Xfix_" = "Afix_", "X_" = "A_",
+                                                      "Yfix_" = "Bfix_", "Y_" = "B_")),
+              .cols = everything())
+
+summary(lm(Afix_mov ~ Afix_Loc + Afix_Pomeroy + Afix_Moore + Afix_Sagarin + Afix_Massey + 
+               Bfix_Pomeroy + Bfix_Moore + Bfix_Sagarin + Bfix_Massey + 
+             Afix_elo + Bfix_elo, 
+    data = eloMasseyMix))
+
+# Adding in pre-season AP rank --------------------------------------------
 
 # Adding in pre-season AP rank as a fixed predictor for each team in each season 
 # as suggested by 538
@@ -440,20 +485,33 @@ startDays <- wideMassey %>% select(Season, DayNum, TeamID, AP) %>%
 
 apStarts <- startDays %>% left_join(wideMassey %>% select(Season, DayNum, TeamID, AP))
 
-# Using elo to impute for AP rankings greater than 25 (as per 538)
-apImpute <- apStarts %>% select(-DayNum) %>% drop_na() %>% 
-  left_join(fullElo1 %>% select(Season:Afix_TeamID, Afix_elo) %>% 
-              rename(TeamID = Afix_TeamID) %>% 
-        group_by(Season, TeamID) %>% slice(1) %>% ungroup()) %>% 
-  group_by(Season, TeamID) %>% arrange(DayNum) %>% 
-  tidyr::fill(Afix_elo, .direction = "updown") %>% filter(!is.na(AP))
+# Full season data for imputing initial AP ranks using Massey ordinals
+apImpute2 <- wideMassey %>% 
+  select(Season:TeamID, Pomeroy, Moore, Sagarin, Massey, AP) %>% 
+  drop_na()
 
-# Model for imputing AP ranks
-apMod <- lm(AP ~ Afix_elo, data = apImpute)
+# Model for imputing AP ranks using full season
+fullMod <- lm(AP ~ 0 + Pomeroy + Moore + Sagarin + Massey,
+            data = apImpute2)
 
-apStartsFull <- apStarts %>% full_join(fullElo1 %>% 
-                                       select(Season:Afix_TeamID, Afix_elo) %>% rename(TeamID = Afix_TeamID) %>% 
-                                       group_by(Season, TeamID) %>% slice(1) %>% ungroup())
+# First days of season for imputation
+apStartsMassey <- apStarts %>% full_join(wideMassey %>% 
+      select(Season:TeamID, Pomeroy, Moore, Sagarin, Massey) %>% 
+      drop_na() %>% group_by(Season, TeamID) %>% slice(1) %>% ungroup()) %>% 
+  group_by(Season, TeamID) %>% 
+  fill(Pomeroy:Massey, .direction = "updown") %>% ungroup() %>% 
+  filter(DayNum %in% apStarts$DayNum)
 
-wideMassey %>% select(Season, DayNum, TeamID, AP) %>% drop_na() %>% 
-  group_by(Season, TeamID) %>% slice(1) %>% ungroup()
+# Model for imputing AP ranks using only first days of season
+firstDayMod <- lm(AP ~ 0 + Pomeroy + Moore + Sagarin + Massey,
+           data = apStartsMassey)
+
+# Comparing imputed values
+apStartsMassey$AP_fullImps <- predict(fullMod, apStartsMassey %>% 
+    select(Pomeroy, Moore, Sagarin, Massey))
+
+apStartsMassey$AP_dayImps <- predict(firstDayMod, apStartsMassey %>% 
+                         select(Pomeroy, Moore, Sagarin, Massey))
+
+plot(apStartsMassey$AP_fullImps, apStartsMassey$AP_dayImps)
+cor(apStartsMassey$AP_fullImps, apStartsMassey$AP_dayImps)
