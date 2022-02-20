@@ -6,9 +6,12 @@
 #################
 
 library(tidyverse)
+library(dtplyr)
 library(furrr)
 library(readr)
 library(progress)
+library(mice)
+library(ranger)
 
 t1 <- Sys.time()
 
@@ -18,6 +21,8 @@ if(Sys.info()["sysname"] == "Darwin") {
 } else {
 stageDir <- "2022/ncaam-march-mania-2021/MDataFiles_Stage1/"
 }
+
+# Importing & Cleaning Box Score Data -------------------------------------
 
 # Importing raw detailed box score data
 regRaw <- read_csv(paste0(stageDir, "MRegularSeasonDetailedResults.csv")) %>% 
@@ -384,15 +389,6 @@ wideElo <- longElo %>% group_by(GameID) %>% slice(1) %>%
                                   select(-c("GameID", "Season", "DayNum", contains("fix_")))) %>% 
   rename(Afix_count = countA, Bfix_count = countB)
 
-
-# Removing first G games of the season for each team
-# e.g., G=1 means exclude games where it is any teams first game of season
-G <- 1
-smallWideElo <- wideElo %>% filter(Afix_count > G, Bfix_count > G)
-
-summary(lm(Afix_mov ~ Afix_elo + Bfix_elo, 
-            data = smallWideElo))
-
 t2 <- Sys.time()
 
 t2 - t1
@@ -427,20 +423,39 @@ wideMassey %>% filter(Season >= 2010) %>% map_int(.f = function(x){sum(!is.na(x)
 (wideMassey %>% filter(Season >= 2010) %>% 
     select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% drop_na() %>% nrow())
 
-completeMassey <- smallWideElo %>% select(Season, DayNum) %>% 
-  distinct() %>% left_join(wideMassey %>% group_by(Season) %>% 
-                             select(Season:TeamID) %>% expand_grid() %>% 
-                             ungroup())
+# Trying using mice package for imputation for wideMassey for 
+# Pomeroy, Moore, Sagarin, and Massey ratings
+wideMassey %>% select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% 
+  mutate(missCount = rowSums(is.na(.)))
+
+wideMassey %>% select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% 
+  mutate(missCount = rowSums(is.na(.))) %>% pull(missCount) %>% table()
+
+# Exploring pattern of missing ratings.
+# Imputation for ratings could help retain large amount of data.
+wideMassey %>% select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% 
+  md.pattern()
+
+# Imputing for ordinal rankings when 1 of 4 are missing. 
+# Can use rowSums since Season, DayNum, & TeamID are all complete
+masseyMiss <- wideMassey %>% select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% 
+  filter((is.na(Pomeroy) + is.na(Moore) + is.na(Sagarin) + is.na(Massey)) < 2)
+
+# Impute ordinal ratings when 1 of 4 is missing using random forest
+masseyImpute <- bind_cols(masseyMiss %>% select(-c(Pomeroy:Massey)), 
+                          masseyMiss %>% select(Pomeroy:Massey) %>% 
+  mice(defaultMethod = "rf", seed = 1994, m = 1, maxit = 1) %>% 
+  complete())
 
 # Adding ordinal ratings to box scores and elo data
 # Carry last rating forward for each team in each season via the fill function
-eloMassey <- smallWideElo %>% full_join(wideMassey %>% 
-            select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey),
-            by = c("Season" = "Season", "DayNum" = "DayNum",
-                   "Afix_TeamID" = "TeamID")) %>% 
+eloMassey <- wideElo %>% full_join(masseyImpute %>% 
+                                     select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey),
+                                   by = c("Season" = "Season", "DayNum" = "DayNum",
+                                          "Afix_TeamID" = "TeamID")) %>% 
   rename(Afix_Pomeroy = Pomeroy, Afix_Moore = Moore, 
          Afix_Sagarin = Sagarin, Afix_Massey = Massey) %>% 
-  full_join(wideMassey %>% 
+  full_join(masseyImpute %>% 
               select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey),
             by = c("Season" = "Season", "DayNum" = "DayNum",
                    "Bfix_TeamID" = "TeamID")) %>% 
@@ -471,7 +486,7 @@ eloMasseyMix <- eloMassey %>% filter(Afix_mov %% 2 == 1) %>%
                                                       "Yfix_" = "Bfix_", "Y_" = "B_")),
               .cols = everything())
 
-summary(lm(Afix_mov ~ Afix_Loc + Afix_Pomeroy + Afix_Moore + Afix_Sagarin + Afix_Massey + 
+summary(lm(Afix_mov ~ 0 + Afix_Loc + Afix_Pomeroy + Afix_Moore + Afix_Sagarin + Afix_Massey + 
                Bfix_Pomeroy + Bfix_Moore + Bfix_Sagarin + Bfix_Massey + 
              Afix_elo + Bfix_elo, 
     data = eloMasseyMix))
@@ -485,33 +500,32 @@ startDays <- wideMassey %>% select(Season, DayNum, TeamID, AP) %>%
 
 apStarts <- startDays %>% left_join(wideMassey %>% select(Season, DayNum, TeamID, AP))
 
+masseyImpute %>% arrange(Season, DayNum) %>% group_by(Season, TeamID) %>%
+  slice(1) %>% ungroup() %>% full_join(apStarts) %>% group_by(Season, TeamID) %>% 
+  fill(c(Pomeroy, Moore, Sagarin, Massey), .direction = "updown")
+
 # Full season data for imputing initial AP ranks using Massey ordinals
-apImpute2 <- wideMassey %>% 
-  select(Season:TeamID, Pomeroy, Moore, Sagarin, Massey, AP) %>% 
-  drop_na()
+apMiss <- masseyImpute %>% arrange(Season, DayNum) %>% group_by(Season, TeamID) %>%
+  slice(1) %>% ungroup() %>% full_join(apStarts) %>% group_by(Season, TeamID) %>% 
+  fill(c(Pomeroy, Moore, Sagarin, Massey), .direction = "updown") %>% ungroup()
 
+# Consider using mice package for imputation
 # Model for imputing AP ranks using full season
-fullMod <- lm(AP ~ 0 + Pomeroy + Moore + Sagarin + Massey,
-            data = apImpute2)
 
-# First days of season for imputation
-apStartsMassey <- apStarts %>% full_join(wideMassey %>% 
-      select(Season:TeamID, Pomeroy, Moore, Sagarin, Massey) %>% 
-      drop_na() %>% group_by(Season, TeamID) %>% slice(1) %>% ungroup()) %>% 
-  group_by(Season, TeamID) %>% 
-  fill(Pomeroy:Massey, .direction = "updown") %>% ungroup() %>% 
-  filter(DayNum %in% apStarts$DayNum)
+# Impute initial AP rankings > 25 using Lasso selection + linear regression
+# Could alternatively use initial sum of Pomeroy:Massey to manually impute ranked order of teams > AP 25
+apImpute <- bind_cols(apMiss %>% select(-c(Pomeroy:AP)), 
+                      apMiss %>% select(Pomeroy:AP) %>% 
+                            mice(defaultMethod = "lasso.select.norm", seed = 1994, m = 1, maxit = 1) %>% 
+                            complete())
 
-# Model for imputing AP ranks using only first days of season
-firstDayMod <- lm(AP ~ 0 + Pomeroy + Moore + Sagarin + Massey,
-           data = apStartsMassey)
+fullMod <- lm(AP ~ Pomeroy + Moore + Sagarin + Massey,
+            data = apMiss)
 
-# Comparing imputed values
-apStartsMassey$AP_fullImps <- predict(fullMod, apStartsMassey %>% 
-    select(Pomeroy, Moore, Sagarin, Massey))
+# Removing first G games of the season for each team
+# e.g., G=1 means exclude games where it is any teams first game of season
+G <- 1
+smallWideElo <- wideElo %>% filter(Afix_count > G, Bfix_count > G)
 
-apStartsMassey$AP_dayImps <- predict(firstDayMod, apStartsMassey %>% 
-                         select(Pomeroy, Moore, Sagarin, Massey))
-
-plot(apStartsMassey$AP_fullImps, apStartsMassey$AP_dayImps)
-cor(apStartsMassey$AP_fullImps, apStartsMassey$AP_dayImps)
+summary(lm(Afix_mov ~ Afix_elo + Bfix_elo, 
+           data = smallWideElo))
