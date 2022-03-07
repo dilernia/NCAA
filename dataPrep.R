@@ -72,7 +72,7 @@ rename_with(.fn =  ~ gsub("_W", "B_", paste0("_", .x),
                           fixed = TRUE), .cols = starts_with("W")) %>% 
   rename_with(.fn =  ~ gsub("_L", "A_", paste0("_", .x),
                             fixed = TRUE), .cols = starts_with("L")) %>%
-  mutate(Afix_win = TRUE) %>% 
+  mutate(Afix_win = FALSE, Afix_mov = -Afix_mov) %>% 
   rename_with(.fn =  ~ gsub("A_", "Afix_", .x,
                             fixed = TRUE), .cols = c(A_TeamID, A_Loc, A_Conference)) %>% 
   rename_with(.fn =  ~ gsub("B_", "Bfix_", .x,
@@ -87,15 +87,18 @@ rename_with(.fn =  ~ gsub("_W", "B_", paste0("_", .x),
 # Parameters to be optimized: k, homeAdv
 # Initial values from 538's values for NBA elo ratings:
 # https://fivethirtyeight.com/features/how-we-calculate-nba-elo-ratings/
+# I found k = 45 to be good, this Python user found 43 for college BBall:
+# https://github.com/grdavis/college-basketball-elo
+# They also found home advantage parameter optimally to be 81.
 
 # Function for calculating game prediction from elo values
 # home: -1 for away, 0 for neutral, 1 for home
-eloPred <- function(elo1, elo2, homeAdv = 140, home = 0) {
+eloPred <- function(elo1, elo2, homeAdv = 81, home = 0) {
   return(1 / (1 + 10^((elo2 - (elo1 + home*homeAdv)) / 400)))
 }
 
 # Function for calculating updated elo values
-eloUpdate <- function(elo, pred, actual, k = 20) {
+eloUpdate <- function(elo, pred, actual, k = 45) {
   return(elo + k*(actual - pred))
 }
 
@@ -348,7 +351,7 @@ fullElo1 %>% group_by(Season) %>%
 fullElo1 %>% filter(Season > 2015) %>% ggplot(aes(y = Afix_elo, x = DayNum, 
                                                   color = factor(Afix_TeamID))) + 
   geom_line() + facet_grid(rows = vars(Season)) +
-  labs(title = "Team Elos by Season", y = "Elo") + theme_bw() +
+  labs(title = "Team Elos by Season", y = "Elo", x = "Day of Season") + theme_bw() +
   theme(legend.position = "none") 
 
 # Rolling Team Statistics -------------------------------------------------
@@ -356,38 +359,32 @@ fullElo1 %>% filter(Season > 2015) %>% ggplot(aes(y = Afix_elo, x = DayNum,
 fullElo2 <- fullRaw2 %>% mutate(Afix_elo = fullElo1$Bfix_elo,
                                 Bfix_elo = fullElo1$Afix_elo)
 
-# Need statistics recorded as rates FOR and AGAINST Team's A and B for each game
-
 # Combine into single data set with 2 rows for each game; 
 # 1 where loser is Team A and 1 where loser is Team B
-longElo <- map_dfr(.x = list(fullElo1, fullElo2), .f = function(x) {
-  x %>% arrange(Season, DayNum, Afix_TeamID) %>% 
-    group_by(Season, Afix_TeamID) %>% mutate(count = seq(n()), 
-         across(.cols = starts_with(c("A_", "B_")),
-                .fns = cumsum)) %>% 
-  mutate(across(.cols = starts_with(c("A_", "B_")),
-                .fns = ~ .x / count)) %>% 
-  select(Season, DayNum, GameID, count, starts_with(c("Afix_", "Bfix_")),
-         starts_with(c("A_", "B_")), -Bfix_Loc)
-})
+longElo <- bind_rows(fullElo1, fullElo2) %>% 
+  group_by(Season, Afix_TeamID) %>% arrange(DayNum) %>% 
+  mutate(Afix_count = seq(n()), across(.cols = starts_with(c("A_", "B_")),
+                .fns = ~ cumsum(.x) / Afix_count)) %>% 
+  select(Season, DayNum, GameID, Afix_count, starts_with(c("Afix_", "Bfix_")),
+         starts_with(c("A_", "B_")), -Bfix_Loc) %>% 
+  mutate(across(starts_with(c("A_", "B_")), ~ lag(.x))) %>% ungroup() %>% 
+  group_by(Season, Bfix_TeamID) %>% mutate(Bfix_count = seq(n())) %>% ungroup()
 
 # Including both 'for' and 'against' info for each game, rather than just 'for'
-wideElo <- longElo %>% group_by(GameID) %>% slice(1) %>% 
-  rename_with(.fn =  ~ gsub("A_", "A_for_", .x,
+wideElo <- longElo %>% 
+  rename_with(.fn = ~ gsub("A_", "A_for_", .x,
                             fixed = TRUE), .cols = starts_with("A_")) %>% 
-  rename_with(.fn =  ~ gsub("B_", "A_against_", .x,
+  rename_with(.fn = ~ gsub("B_", "A_against_", .x,
                             fixed = TRUE), .cols = starts_with("B_")) %>% 
-  rename(countA = count) %>% 
-  ungroup() %>% mutate(across(starts_with(c("A_", "B_")), ~ lag(.x))) %>% 
-  arrange(GameID) %>% bind_cols(longElo %>% group_by(GameID) %>% slice(2) %>% 
-                                  rename_with(.fn =  ~ gsub("B_", "B_against_", .x,
-                                                            fixed = TRUE), .cols = starts_with("B_")) %>% 
-                                  rename_with(.fn =  ~ gsub("A_", "B_for_", .x,
-                                                            fixed = TRUE), .cols = starts_with("A_")) %>% 
-                                  ungroup() %>% mutate(across(starts_with(c("A_", "B_")), ~ lag(.x))) %>% 
-                                  rename(countB = count) %>% arrange(GameID) %>% 
-                                  select(-c("GameID", "Season", "DayNum", contains("fix_")))) %>% 
-  rename(Afix_count = countA, Bfix_count = countB)
+  arrange(GameID) %>% mutate(Ref = ifelse(Afix_mov > 0, "-A", "-B")) %>% 
+  pivot_wider(id_cols = c(Season, DayNum, GameID), 
+              values_from = starts_with(c("A_", "B_")), 
+              names_from = Ref) %>% 
+  rename_with(.fn =  ~ gsub("_-A", "", .x, fixed = TRUE), .cols = ends_with("_-A")) %>% 
+  rename_with(.fn =  ~ gsub("A_", "B_", gsub("_-B", "", .x, fixed = TRUE), fixed = TRUE),
+              .cols = ends_with("_-B")) %>% left_join(longElo %>% 
+  filter(Afix_mov > 0) %>% select(-starts_with(c("A_", "B_")))) %>% 
+  select(Season, DayNum, GameID, starts_with(c("Afix_", "Bfix_")), everything())
 
 t2 <- Sys.time()
 
@@ -493,39 +490,73 @@ summary(lm(Afix_mov ~ 0 + Afix_Loc + Afix_Pomeroy + Afix_Moore + Afix_Sagarin + 
 
 # Adding in pre-season AP rank --------------------------------------------
 
-# Adding in pre-season AP rank as a fixed predictor for each team in each season 
-# as suggested by 538
-startDays <- wideMassey %>% select(Season, DayNum, TeamID, AP) %>% 
-  drop_na() %>% group_by(Season) %>% summarize(DayNum = min(DayNum))
+# Preseason poll data from sports-reference: https://www.sports-reference.com/cbb/seasons/2003-polls.html
+# AP rankings from Kaggle did not seem to have preseason AP rankings for teams
+apPres <- list.files("AP/") %>% str_subset(pattern = "csv") %>% map_dfr(.f = function(myFile) {
+  season <- str_sub(str_split(myFile, pattern = "-")[[1]][2], start = 1, end = 4)
+  ret <- read_csv(paste0("AP/", myFile), 
+         skip = 2, show_col_types = FALSE) %>% select(School, Pre) %>% drop_na() %>% 
+    mutate(Season = as.numeric(season))
+}) %>% mutate(TeamNameSpelling = tolower(School)) %>% 
+  left_join(read_csv(paste0(stageDir, "MTeamSpellings.csv"))) %>% 
+  rename(AP = Pre) %>% select(Season, TeamID, AP)
 
-apStarts <- startDays %>% left_join(wideMassey %>% select(Season, DayNum, TeamID, AP))
-
-masseyImpute %>% arrange(Season, DayNum) %>% group_by(Season, TeamID) %>%
-  slice(1) %>% ungroup() %>% full_join(apStarts) %>% group_by(Season, TeamID) %>% 
-  fill(c(Pomeroy, Moore, Sagarin, Massey), .direction = "updown")
-
-# Full season data for imputing initial AP ranks using Massey ordinals
+# Imputing initial AP ranks using Massey ordinals
 apMiss <- masseyImpute %>% arrange(Season, DayNum) %>% group_by(Season, TeamID) %>%
-  slice(1) %>% ungroup() %>% full_join(apStarts) %>% group_by(Season, TeamID) %>% 
-  fill(c(Pomeroy, Moore, Sagarin, Massey), .direction = "updown") %>% ungroup()
+  slice(1) %>% ungroup() %>% full_join(apPres) %>% group_by(Season) %>% 
+  mutate(AggRank = rank(Pomeroy+Moore+Sagarin+Massey)) %>% ungroup() %>% 
+  mutate(AP = case_when(is.na(AP) ~ AggRank, 
+                        TRUE ~ AP)) %>% select(Season, TeamID, AP)
 
-# Consider using mice package for imputation
-# Model for imputing AP ranks using full season
+# Adding into full data
+eloMasseyAP <- eloMassey %>% 
+  left_join(apMiss, by = c("Season" = "Season",  "Afix_TeamID" = "TeamID")) %>% 
+  left_join(apMiss, by = c("Season" = "Season",  "Bfix_TeamID" = "TeamID")) %>% 
+  rename(Afix_AP = AP.x, Bfix_AP = AP.y)
 
-# Impute initial AP rankings > 25 using Lasso selection + linear regression
-# Could alternatively use initial sum of Pomeroy:Massey to manually impute ranked order of teams > AP 25
-apImpute <- bind_cols(apMiss %>% select(-c(Pomeroy:AP)), 
-                      apMiss %>% select(Pomeroy:AP) %>% 
-                            mice(defaultMethod = "lasso.select.norm", seed = 1994, m = 1, maxit = 1) %>% 
-                            complete())
-
-fullMod <- lm(AP ~ Pomeroy + Moore + Sagarin + Massey,
-            data = apMiss)
+# Randomly selecting some games to have Team A lose
+eloMasseyAPMix <- eloMasseyAP %>% filter(Afix_mov %% 2 == 1) %>% 
+  rename_with(.fn =  ~ str_replace_all(string = .x, c("Afix_" = "Xfix_", "A_" = "X_",
+                                                      "Bfix_" = "Yfix_", "B_" = "Y_")),
+              .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc"))) %>% 
+  bind_rows(eloMasseyAP %>% filter(Afix_mov %% 2 == 0) %>% 
+              mutate(Afix_mov = -Afix_mov, Afix_win = !Afix_win,
+                     Afix_Loc = case_when(Afix_Loc == "A" ~ "H",
+                                          Afix_Loc == "H" ~ "A",
+                                          TRUE ~ Afix_Loc)) %>% 
+              rename_with(.fn =  ~ str_replace_all(string = .x, c("Bfix_" = "Xfix_", "B_" = "X_",
+                                                                  "Afix_" = "Yfix_", "A_" = "Y_")),
+                          .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc")))) %>% 
+  rename_with(.fn =  ~ str_replace_all(string = .x, c("Xfix_" = "Afix_", "X_" = "A_",
+                                                      "Yfix_" = "Bfix_", "Y_" = "B_")),
+              .cols = everything())
 
 # Removing first G games of the season for each team
 # e.g., G=1 means exclude games where it is any teams first game of season
 G <- 1
-smallWideElo <- wideElo %>% filter(Afix_count > G, Bfix_count > G)
+smallEloMasseyAPMix <- eloMasseyAPMix %>% filter(Afix_count > G, Bfix_count > G)
 
 summary(lm(Afix_mov ~ Afix_elo + Bfix_elo, 
-           data = smallWideElo))
+           data = smallEloMasseyAPMix))
+
+# Testing out cvGLMnet
+
+# Creating design matrix
+designMat <- eloMasseyAPMix %>% select(-Afix_count, -Bfix_count,
+                                       -Season, -DayNum, -GameID, -Afix_TeamID,
+                                       -Bfix_TeamID, -Afix_Conference,
+                                       -Bfix_Conference, -Afix_mov) %>% 
+  model.matrix(object = formula(Afix_win ~ 0 + .)) %>% 
+  as.data.frame() %>% 
+  mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
+  as.matrix()
+
+# Fitting lasso-penalized model
+library(glmnet)
+cvModel <- cv.glmnet(x = designMat, y = eloMasseyAPMix$Afix_win,
+                     family = "binomial", type.measure = "class",
+                     nfolds = 10)
+
+plot(cvModel)
+
+coef(cvModel, s = "lambda.min")
