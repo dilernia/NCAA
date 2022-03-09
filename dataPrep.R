@@ -413,55 +413,41 @@ wideMassey <- massey %>%
   arrange(Season, DayNum) %>% group_by(Season, TeamID) %>% 
   fill(SEL:REI, .direction = "down") %>% ungroup()
 
-# Since 2010 and later, POM, MOR, SAG, PGH appear to have most pairwise complete obs
-wideMassey %>% filter(Season >= 2010) %>% map_int(.f = function(x){sum(!is.na(x))}) %>% 
-  sort(decreasing = TRUE) %>% as.data.frame()
-
-(wideMassey %>% filter(Season >= 2010) %>% 
-    select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% drop_na() %>% nrow())
-
-# Trying using mice package for imputation for wideMassey for 
-# Pomeroy, Moore, Sagarin, and Massey ratings
-wideMassey %>% select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% 
-  mutate(missCount = rowSums(is.na(.)))
-
-wideMassey %>% select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% 
-  mutate(missCount = rowSums(is.na(.))) %>% pull(missCount) %>% table()
-
 # Exploring pattern of missing ratings.
-# Imputation for ratings could help retain large amount of data.
+# Imputation for ratings helps retain large amount of data.
+# In preliminary modelling Massey ratings not important, so drop here to retain ~ 3000 more games
 wideMassey %>% select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% 
   md.pattern()
 
 # Imputing for ordinal rankings when 1 of 4 are missing. 
 # Can use rowSums since Season, DayNum, & TeamID are all complete
-masseyMiss <- wideMassey %>% select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey) %>% 
-  filter((is.na(Pomeroy) + is.na(Moore) + is.na(Sagarin) + is.na(Massey)) < 2)
+masseyMiss <- wideMassey %>% select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin) %>% 
+  filter((is.na(Pomeroy) + is.na(Moore) + is.na(Sagarin)) < 2)
 
 # Impute ordinal ratings when 1 of 4 is missing using random forest
-masseyImpute <- bind_cols(masseyMiss %>% select(-c(Pomeroy:Massey)), 
-                          masseyMiss %>% select(Pomeroy:Massey) %>% 
+masseyImpute <- bind_cols(masseyMiss %>% select(-c(Pomeroy:Sagarin)), 
+                          masseyMiss %>% select(Pomeroy:Sagarin) %>% 
   mice(defaultMethod = "rf", seed = 1994, m = 1, maxit = 1) %>% 
   complete())
 
 # Adding ordinal ratings to box scores and elo data
 # Carry last rating forward for each team in each season via the fill function
 eloMassey <- wideElo %>% full_join(masseyImpute %>% 
-                                     select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey),
+                                     select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin),
                                    by = c("Season" = "Season", "DayNum" = "DayNum",
                                           "Afix_TeamID" = "TeamID")) %>% 
   rename(Afix_Pomeroy = Pomeroy, Afix_Moore = Moore, 
-         Afix_Sagarin = Sagarin, Afix_Massey = Massey) %>% 
+         Afix_Sagarin = Sagarin) %>% 
   full_join(masseyImpute %>% 
-              select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin, Massey),
+              select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin),
             by = c("Season" = "Season", "DayNum" = "DayNum",
                    "Bfix_TeamID" = "TeamID")) %>% 
   rename(Bfix_Pomeroy = Pomeroy, Bfix_Moore = Moore, 
-         Bfix_Sagarin = Sagarin, Bfix_Massey = Massey) %>% 
+         Bfix_Sagarin = Sagarin) %>% 
   arrange(Season, DayNum) %>% group_by(Season, Afix_TeamID) %>% 
-  tidyr::fill(c(Afix_Pomeroy, Afix_Moore, Afix_Sagarin, Afix_Massey), .direction = "down") %>% 
+  tidyr::fill(c(Afix_Pomeroy, Afix_Moore, Afix_Sagarin), .direction = "down") %>% 
   ungroup() %>% group_by(Season, Bfix_TeamID) %>% 
-  tidyr::fill(c(Bfix_Pomeroy, Bfix_Moore, Bfix_Sagarin, Bfix_Massey), .direction = "down") %>% 
+  tidyr::fill(c(Bfix_Pomeroy, Bfix_Moore, Bfix_Sagarin), .direction = "down") %>% 
   ungroup() %>% drop_na()
 
 # Testing to see if columns seem reasonable
@@ -483,8 +469,8 @@ eloMasseyMix <- eloMassey %>% filter(Afix_mov %% 2 == 1) %>%
                                                       "Yfix_" = "Bfix_", "Y_" = "B_")),
               .cols = everything())
 
-summary(lm(Afix_mov ~ 0 + Afix_Loc + Afix_Pomeroy + Afix_Moore + Afix_Sagarin + Afix_Massey + 
-               Bfix_Pomeroy + Bfix_Moore + Bfix_Sagarin + Bfix_Massey + 
+summary(lm(Afix_mov ~ 0 + Afix_Loc + Afix_Pomeroy + Afix_Moore + Afix_Sagarin + 
+               Bfix_Pomeroy + Bfix_Moore + Bfix_Sagarin + 
              Afix_elo + Bfix_elo, 
     data = eloMasseyMix))
 
@@ -504,7 +490,7 @@ apPres <- list.files("AP/") %>% str_subset(pattern = "csv") %>% map_dfr(.f = fun
 # Imputing initial AP ranks using Massey ordinals
 apMiss <- masseyImpute %>% arrange(Season, DayNum) %>% group_by(Season, TeamID) %>%
   slice(1) %>% ungroup() %>% full_join(apPres) %>% group_by(Season) %>% 
-  mutate(AggRank = rank(Pomeroy+Moore+Sagarin+Massey)) %>% ungroup() %>% 
+  mutate(AggRank = rank(Pomeroy+Moore+Sagarin)) %>% ungroup() %>% 
   mutate(AP = case_when(is.na(AP) ~ AggRank, 
                         TRUE ~ AP)) %>% select(Season, TeamID, AP)
 
@@ -531,6 +517,8 @@ eloMasseyAPMix <- eloMasseyAP %>% filter(Afix_mov %% 2 == 1) %>%
                                                       "Yfix_" = "Bfix_", "Y_" = "B_")),
               .cols = everything())
 
+# Sanity Checks ---------------------------------------------
+
 # Removing first G games of the season for each team
 # e.g., G=1 means exclude games where it is any teams first game of season
 G <- 1
@@ -539,7 +527,7 @@ smallEloMasseyAPMix <- eloMasseyAPMix %>% filter(Afix_count > G, Bfix_count > G)
 summary(lm(Afix_mov ~ Afix_elo + Bfix_elo, 
            data = smallEloMasseyAPMix))
 
-# Testing out cvGLMnet
+# Sanity check for data leakage or other issues using cv.glmnet
 
 # Creating design matrix
 designMat <- eloMasseyAPMix %>% select(-Afix_count, -Bfix_count,
@@ -553,6 +541,7 @@ designMat <- eloMasseyAPMix %>% select(-Afix_count, -Bfix_count,
 
 # Fitting lasso-penalized model
 library(glmnet)
+set.seed(1994)
 cvModel <- cv.glmnet(x = designMat, y = eloMasseyAPMix$Afix_win,
                      family = "binomial", type.measure = "class",
                      nfolds = 10)
@@ -560,3 +549,83 @@ cvModel <- cv.glmnet(x = designMat, y = eloMasseyAPMix$Afix_win,
 plot(cvModel)
 
 coef(cvModel, s = "lambda.min")
+
+# Important predictors from lasso model (kept for both A and B and for and against):
+
+fitRes <- data.frame(Predictor = coef(cvModel, s = "lambda.min") %>% 
+                       as.matrix() %>% as.data.frame() %>% rownames(), 
+           Value = coef(cvModel, s = "lambda.min") %>% as.matrix() %>% 
+             as.data.frame() %>% unlist()) %>% filter(abs(Value) > 0.00001)
+
+preds <- fitRes %>% pull(Predictor) %>% 
+  str_split(pattern = "A_|B_|Afix|Bfix") %>% unlist() %>% 
+  trimws(whitespace = "_") %>% table() %>% as.data.frame() %>% 
+  arrange(desc(Freq)) %>% filter(`.` != "")
+
+# Creating first-order design matrix for model fitting
+designMatFit <- eloMasseyAPMix %>% 
+  select(Afix_win, Afix_Loc, 
+         A_for_Ast, B_for_Ast, A_against_Ast, B_against_Ast,
+         A_for_OR, B_for_OR, A_against_OR, B_against_OR, 
+         A_against_FGA, B_against_FGA,
+         A_for_Blk, B_for_Blk, 
+         A_for_Stl, B_for_Stl,
+         A_for_Score, B_for_Score,
+         Afix_AP, Bfix_AP, Afix_elo, Bfix_elo,
+         Afix_Moore, Bfix_Moore, Afix_Pomeroy, Bfix_Pomeroy,
+         Afix_Sagarin, Bfix_Sagarin, 
+         A_for_TO, B_for_TO,
+         A_against_FTA, B_against_FTA, 
+         A_against_DR, B_against_DR) %>%  
+  model.matrix(object = formula(Afix_win ~ 0 + .)) %>% 
+  as.data.frame() %>% 
+  mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
+  as.matrix()
+
+# Creating second-order design matrix for model fitting
+designMatFit2 <- eloMasseyAPMix %>% 
+  select(Afix_win, Afix_Loc, 
+         A_for_Ast, B_for_Ast, A_against_Ast, B_against_Ast,
+         A_for_OR, B_for_OR, A_against_OR, B_against_OR, 
+         A_against_FGA, B_against_FGA,
+         A_for_Blk, B_for_Blk, 
+         A_for_Stl, B_for_Stl,
+         A_for_Score, B_for_Score,
+         Afix_AP, Bfix_AP, Afix_elo, Bfix_elo,
+         Afix_Moore, Bfix_Moore, Afix_Pomeroy, Bfix_Pomeroy,
+         Afix_Sagarin, Bfix_Sagarin, 
+         A_for_TO, B_for_TO,
+         A_against_FTA, B_against_FTA, 
+         A_against_DR, B_against_DR) %>%  
+  model.matrix(object = formula(Afix_win ~ 0 + .^2)) %>% 
+  as.data.frame() %>% 
+  mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
+  as.matrix()
+
+# Fitting lasso-penalized model to try & drop more predictors
+library(glmnet)
+set.seed(1994)
+cvModelwin <- cv.glmnet(x = designMatFit, y = eloMasseyAPMix$Afix_win,
+                     family = "binomial", type.measure = "class",
+                     nfolds = 10)
+
+cvModelmov <- cv.glmnet(x = designMatFit, y = eloMasseyAPMix$Afix_mov,
+                        family = "gaussian", type.measure = "mse",
+                        nfolds = 10)
+
+plot(cvModelwin)
+plot(cvModelmov)
+
+coef(cvModelwin, s = "lambda.min")
+coef(cvModelmov, s = "lambda.min")
+
+# Saving for model fitting
+saveRDS(list(Awin = eloMasseyAPMix$Afix_win, 
+             MOV = eloMasseyAPMix$Afix_mov, 
+             Design = designMatFit, FullData = eloMasseyAPMix), 
+        file = "2022/designResponse.rds")
+
+saveRDS(list(Awin = eloMasseyAPMix$Afix_win, 
+             MOV = eloMasseyAPMix$Afix_mov, 
+             Design = designMatFit2, FullData = eloMasseyAPMix), 
+        file = "2022/designResponse2.rds")
