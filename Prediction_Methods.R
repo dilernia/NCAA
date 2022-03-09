@@ -18,6 +18,8 @@ library(caret)
 library(kernlab)
 library(RSNNS)
 
+# Preparing design matrix and response vector for fitting -----------------
+
 # Reading in data
 desResp <- readRDS("Our_Data/designResponse.rds")
 
@@ -47,11 +49,11 @@ forms <- list(MOV = outcome ~ 0 + ., Awin =  outcome ~ 0 + .)
 designMats <- list(MOV = model.matrix(forms$MOV, data = modelDats$MOV),
                    Awin = model.matrix(forms$Awin, data = modelDats$Awin))
 
-# Setting parameters ------------------------------------------------------
+# Setting model parameters ------------------------------------------------------
 
 # Should be one of 'MOV' or 'Awin'
-model <- "MOV"
-#model <- "Awin"
+#model <- "MOV"
+model <- "Awin"
 
 # Setting training size and seed
 seed <- 1994
@@ -120,9 +122,9 @@ my.rf <- caret::train(form = form, data = modelData, method = "rf",
 my.boost <- caret::train(form = form, data = modelData, method = "gbm", 
                          distribution = ifelse(model == "Awin", 
                                                "bernoulli", "gaussian"),
-                         trControl = ctrl, tuneGrid = expand.grid(n.trees = c(25, 50, 100, seq(250, 2500, by = 250)), 
-                                                                  shrinkage = c(0.05, 0.10, 0.16, seq(0.20, 1, by = 0.20)),
-                                                                  interaction.depth = 1:5, n.minobsinnode = 8:12))
+                         trControl = ctrl, tuneGrid = expand.grid(n.trees = c(100, 200, seq(300, 1500, by = 200)), 
+                                                                  shrinkage = c(0.05, 0.10, 0.16, seq(0.20, 0.50, by = 0.10)),
+                                                                  interaction.depth = 1:3, n.minobsinnode = 8:12))
 
 # (8) Artificial Neural Network w/ 1 hidden layer
 my.nnet <- caret::train(form, data = modelData, method = "nnet", 
@@ -133,21 +135,14 @@ my.nnet <- caret::train(form, data = modelData, method = "nnet",
 
 # (9) Artificial Neural Network w/ 3 hidden layers
 my.nnet3 <- caret::train(form, data = modelData, method = 'mlpWeightDecayML', 
-                         trControl = ctrl, trace = FALSE, maxit = 10000,
-                         tuneGrid = expand.grid(layer1 = c(3, 5, 7),
-                                                layer2 = c(0, 3, 5, 7),
-                                                layer3 = c(0, 3, 5, 7),
-                                                decay = c(0.001, 0.005, 0.01, 0.015, 0.02)),
-                         linout = ifelse(model == "Awin", FALSE, TRUE))
+                  trControl = ctrl, trace = FALSE, maxit = 10000,
+                  tuneGrid = expand.grid(layer1 = c(3, 5, 7),
+                                         layer2 = c(0, 3, 5, 7),
+                                         layer3 = c(0, 3, 5, 7),
+                                         decay = c(0.001, 0.005, 0.01, 0.015, 0.02)),
+                  linout = ifelse(model == "Awin", FALSE, TRUE))
 
-# (10) Neural Network with Feature Extraction
-my.nnetf <- caret::train(form, data = modelData, method = 'pcaNNet', 
-                         trControl = ctrl, trace = FALSE, maxit = 10000,
-                         tuneGrid = expand.grid(size = c(3, 5, 8, 10, 12, 15, 16),
-                                                decay = c(0.0001, 0.0005, 0.001, 0.003, 0.004, 0.005)),
-                         linout = ifelse(model == "Awin", FALSE, TRUE))
-
-# (11) Support Vector Machine (SVM)
+# (10) Support Vector Machine (SVM)
 # For final run try kernal = c("sigmoid", "radial"), 
 # gamma = c(1/ncol(modelData), seq(0.005, 0.05, by = 0.005)), cost = seq(0.50, 2, by = 0.50)
 my.svm <- caret::train(form, data = modelData, method = 'svmRadialCost', 
@@ -181,18 +176,18 @@ predCalc <- function(modelData = modelData.test, designMat = designMat.test) {
                        nnetPreds, nnet3Preds, nnetfPreds, svmPreds, 
                        cvglmPreds, pcrPreds, ldaPreds), 
                   c("Full Tree", 'Pruned Tree', 
-                    "Random Forest", 'Grad Boost', 
-                    "NNet", "NNet3", "NNetF",
-                    "SVM Radial",
-                    "CV glmnet", "PCR", "LDA")))
+                                    "Random Forest", 'Grad Boost', 
+                                    "NNet", "NNet3", "NNetF",
+                                    "SVM Radial",
+                                    "CV glmnet", "PCR", "LDA")))
 }
 
-# Preventing extreme predictions. Need to tune thresh for final preds
+# Preventing extrememe predictions. Need to tune thresh for final preds
 capper <- function(x, thresh = 0.01){
   if(is.null(dim(x)) == FALSE) {if(dim(x)[2] == 2) {x <- x[, 2]}}
   for(i in 1:length(x)) {
     x[i] <- ifelse(is.na(x[i]), NA, ifelse(x[i] < thresh, thresh, 
-                                           ifelse(x[i] > 1-thresh, 1-thresh, x[i])))
+                   ifelse(x[i] > 1-thresh, 1-thresh, x[i])))
   }
   return(as.numeric(x))
 }
@@ -208,9 +203,6 @@ if(model == "MOV") {
                                                  movHat = MOVhats), family = "binomial")
     return(fit)
   }, X = trPreds)
-  
-  # Saving conversion fits
-  saveRDS(converts, "convertFits.rds")
   
   # Converting from MOV to estimated win prob
   movList <- predCalc()
@@ -261,3 +253,256 @@ saveRDS(results, paste0(model, "_Tr", trainSize, "_Seed", seed, ".rds"))
 
 # Previous winners
 #https://storage.googleapis.com/kaggle-forum-message-attachments/473390/11340/Perennial%20Favories%202014-2018.png
+
+
+# Summarizing performances ------------------------------------------------
+library(tidyverse)
+
+perfResults <- list.files("Runs/") %>% str_subset("Seed") %>% 
+  map_dfr(.f = function(x) {readRDS(paste0("Runs/", x))[[1]]})
+
+models <- list.files("Runs/") %>% str_subset("Seed") %>% 
+  map(.f = function(x) {temp <- readRDS(paste0("Runs/", x));
+  return(temp[2:length(temp)])}) %>% unlist(recursive = FALSE)
+
+mNames <- map(.x = models, .f = function(x) {ifelse(is.null(unlist(x["method"])), "Unsure",
+                                                       x["method"])}) %>% unlist() %>% 
+  recode(rf = "Random Forest", svdpc = "PCR", gbm = "Grad Boost", nnet = "NNet",
+         pcaNNet = "NNetF", svmRadialCost = "SVM Radial")
+
+mNames[c(1:2, 4, 6, 11:12, 14, 16)] <- rep(c("Full Tree", 'Pruned Tree', "CV glmnet", "LDA"), 2)
+
+perfResults$Model <- mNames
+
+print(xtable::xtable(perfResults[, 
+                     colnames(perfResults)[c(ncol(perfResults), 
+                     1:(ncol(perfResults)-1))]], digits = 4), include.rownames = FALSE)
+
+
+# Final Predictions -------------------------------------------------------
+
+library(tidyverse)
+
+# Reading in design matrix for final predicitons
+subA <- read.csv("2021/SubmissionFileA.csv")
+subB <- read.csv("2021/SubmissionFileB.csv")
+finalDesign <- readRDS("2021/tournamentGames2021.rds")
+
+# Cleaning submission files
+subA <- subA %>% select(-X) %>% rename(id = ID, pred = Pred) %>% 
+  mutate(pred = 0.50)
+subB <- subB %>% select(-X) %>% rename(id = ID, pred = Pred) %>% 
+  mutate(pred = 0.50)
+
+# Whether to manually fix some probs to 0/1
+manual <- FALSE
+
+if(manual == TRUE) {
+# Setting 1 vs 16 seed games manually
+teamA <- c("1233", "1205", "1181", "1181", "1192", "1211")
+teamB <- c("1314", "1438", "1300", "1295", "1211", "1341")
+probs <- c(1, 1, 0, 0, 1, 0)
+aInds <- which(subA$id %in% paste0("2019_", teamA, "_", teamB))
+bInds <- which(subB$id %in% paste0("2019_", teamA, "_", teamB))
+subA[aInds, "pred"] <- probs
+subB[bInds, "pred"] <- probs
+
+# Setting all possible championship games manually
+roundData <- read.csv("Kaggle Data/Stage2/NCAATourneySeedRoundSlots.csv") %>% 
+  filter(GameRound == 6)
+seedData <- read.csv("Kaggle Data/Stage2/NCAATourneySeeds.csv") %>% 
+  filter(Season == 2019) %>% select(-Season)
+
+# Unique combinations and obtaining teamID for each seedID
+champGames <- expand.grid(t1 = roundData$Seed, t2 = roundData$Seed) %>% 
+  filter(substring(t1, 1, 1) == "Y" & substring(t2, 1, 1) == "W" |
+         substring(t1, 1, 1) == "Y" & substring(t2, 1, 1) == "X" |
+         substring(t1, 1, 1) == "Z" & substring(t2, 1, 1) == "W" |
+         substring(t1, 1, 1) == "Z" & substring(t2, 1, 1) == "X" |
+         substring(t1, 1, 1) == "X" & substring(t2, 1, 1) == "Y" |
+         substring(t1, 1, 1) == "X" & substring(t2, 1, 1) == "Z" |
+         substring(t1, 1, 1) == "W" & substring(t2, 1, 1) == "Y" |
+         substring(t1, 1, 1) == "W" & substring(t2, 1, 1) == "Z") %>% 
+  left_join(seedData, by = c("t1" = "Seed")) %>% 
+  left_join(seedData, by = c("t2" = "Seed"))
+champGames <- champGames[complete.cases(champGames), ] %>% 
+  filter(TeamID.x < TeamID.y)
+
+acInds <- which(subA$id %in% paste0("2019_", champGames$TeamID.x, 
+                                   "_", champGames$TeamID.y))
+bcInds <- which(subB$id %in% paste0("2019_", champGames$TeamID.x, 
+                                    "_", champGames$TeamID.y))
+subA[acInds, "pred"] <- 1
+subB[bcInds, "pred"] <- 0
+}
+
+# Centering and scaling design matrix
+Aloc <- finalDesign$Aloc
+finalDesign <- as.data.frame(lapply(finalDesign, FUN = scale, center = TRUE,
+                      scale = TRUE))
+finalDesign$Aloc <- Aloc
+
+# Renaming outcome column
+colnames(finalDesign)[which(colnames(finalDesign) == "Awin")] <- "outcome"
+
+# Rearranging columns
+newDatFormat <- readRDS("SubmissionFiles/newDatFormat.rds")
+finalDesign <- finalDesign[, colnames(newDatFormat)]
+
+# Switching which team is A and B
+colnames(finalDesign)[which(colnames(finalDesign) != "Aloc")] <- colnames(finalDesign)[which(colnames(finalDesign) != "Aloc")] %>% 
+  gsub(pattern = "AstRatio", replacement = "astratio") %>% 
+  gsub(pattern = "A", replacement = "xxx") %>% 
+  gsub(pattern = "B", replacement = "A") %>% 
+  gsub(pattern = "xxx", replacement = "B") %>% 
+gsub(pattern = "astratio", replacement = "AstRatio")
+
+# Recoding Aloc as factor
+finalDesign$Aloc <- factor(finalDesign$Aloc, 
+                           levels = levels(newDatFormat$Aloc))
+
+# Reading in best model fits
+models <- list()
+
+models$Awin <- list.files("Runs/") %>% str_subset("Awin") %>% 
+  map(.f = function(x) {temp <- readRDS(paste0("Runs/", x));
+  print("Complete.");
+  return(temp[2:length(temp)])}) %>% unlist(recursive = FALSE)
+
+models$MOV <- list.files("Runs/") %>% str_subset("MOV") %>% 
+  map(.f = function(x) {temp <- readRDS(paste0("Runs/", x));
+  print("Complete.");
+  return(temp[2:length(temp)])}) %>% unlist(recursive = FALSE)
+
+# Names of model fits
+mNames <- c("fullTree", "prunedTree", "randomForest", "cvGlmnet", "PCR", "LDA", "GBM", "NNet", "NNetF", "SVM")
+names(models$Awin) <- names(models$MOV) <- mNames
+
+# Estimating conversion between MOV and probability
+
+# Reading in data
+desResp <- readRDS("Our_Data/designResponse.rds")
+
+# Standardizing predictors and removing some columns
+designMat <- subset(desResp[[1]], select = -c(Awin, Season, Tourney, Spread,
+                                              ATeamID, BTeamID, Aloc, Site))
+Aloc <- desResp[[1]]$Aloc
+
+designMat <- as.data.frame(lapply(designMat, FUN = scale, 
+                                  center = TRUE, scale = TRUE))
+
+# Adding location column back in
+designMat$Aloc <- as.factor(Aloc)
+
+# Removing any rows with missing values for now. Maybe consider imputation later
+compInds <- complete.cases(designMat)
+designMat <- designMat[compInds, ]
+
+# Creating model matrices (with outcome) and storing in list
+modelDats <- list(MOV = designMat, Awin = designMat)
+modelDats$MOV$outcome <- desResp[[2]]$MOV[compInds]
+modelDats$Awin$outcome <- factor(desResp[[2]]$Awin[compInds])
+
+# Creating model form objects and storing in list
+forms <- list(MOV = outcome ~ 0 + ., Awin =  outcome ~ 0 + .)
+
+# Creating model design matrices (without outcome) and storing in list
+designMats <- list(MOV = model.matrix(forms$MOV, data = modelDats$MOV),
+                   Awin = model.matrix(forms$Awin, data = modelDats$Awin))
+
+# Training objects
+modelData <- modelDats[["MOV"]]
+designMat <- designMats[["MOV"]]
+
+# Function for obtaining predicted probabilities
+predCalc <- function(modelData = modelData.test, designMat = designMat.test, model = "MOV") {
+  
+  treePreds <- predict(models[[model]]$fullTree, modelData)
+  prunedPreds <- predict(models[[model]]$prunedTree, modelData)
+  rfPreds <- predict(models[[model]]$randomForest, newdata = modelData, 
+                     type = ifelse(model == "Awin", "prob", "raw"))
+  cvglmPreds <- predict(models[[model]]$cvGlmnet, newx = designMat, 
+                        s = "lambda.min", type = "response")
+  pcrPreds <- predict(models[[model]]$PCR, newdata = modelData, ncomp = models[[model]]$PCR[["validation"]][["ncomp"]], type = "response")
+  ldaPreds <- predict(models[[model]]$LDA, newdata = modelData)$posterior
+  boostPreds <- predict(models[[model]]$GBM, modelData, 
+                        type = ifelse(model == "Awin", "prob", "raw"))
+  nnetPreds <- predict(models[[model]]$NNet, modelData, 
+                       type = ifelse(model == "Awin", "prob", "raw"))
+  nnetfPreds <- predict(models[[model]]$NNetF, modelData, 
+                        type = ifelse(model == "Awin", "prob", "raw"))
+  svmPreds <- predict(models[[model]]$SVM, modelData, 
+                      type = ifelse(model == "Awin", "prob", "raw"))
+  
+  return(list(treePreds, prunedPreds, rfPreds, cvglmPreds, 
+                       pcrPreds, ldaPreds, boostPreds, nnetPreds, nnetfPreds, svmPreds))
+}
+
+if(file.exists("converts.rds") == FALSE) {
+  # Obtaining estimated probabilities for full data set
+  movPreds <- setNames(lapply(predCalc(modelData = modelData, designMat = designMat, model = "MOV"),
+                     FUN = function(x){x <- as.matrix(x); as.numeric(x)[1:nrow(x)]}), mNames)
+  
+  # Estimating custom conversion between MOV and win probability using model fits
+  converts <- setNames(lapply(X = movPreds, FUN = function(MOVhats) {
+    return(glm(formula = outcome ~ 0 + ., data = data.frame(outcome = desResp[[2]][["Awin"]][compInds], 
+                                                            movHat = MOVhats), family = "binomial"))}), mNames)
+  
+  # Saving conversion model objects
+  saveRDS(converts, "converts.rds")
+} else {
+  converts <- readRDS("converts.rds")
+}
+
+# Selecting our optimal model (modelNum = 6 for 2019 submission)
+for(modelNum in 3:9) {
+finalModel <- models$Awin[[modelNum]]
+
+# Obtaining predictions and saving
+response <- "Awin"
+thresh <- 0.99
+
+if(mNames[modelNum] == "cvGlmnet") {
+    glmnetDesign <- finalDesign %>% mutate(outcome = 0)
+      finalPreds <- predict(finalModel, newx = model.matrix(outcome ~ ., glmnetDesign), s = "lambda.min", type = "response")
+      } else if(mNames[modelNum] == "PCR") {
+        finalPreds <- predict(finalModel, newdata = finalDesign, ncomp = finalModel[["ncomp"]], type = "response")
+        } else if(mNames[modelNum] == "LDA") {
+          finalPreds <- predict(finalModel, newdata = finalDesign)$posterior
+        } else {
+          finalPreds <- predict(finalModel, finalDesign,  type = "prob")
+          }
+
+  # Capping estimated probabilities
+if(ncol(finalPreds) == 2) {
+  finalPreds <- finalPreds[, 2]
+}
+
+  finalPreds <- ifelse(finalPreds <= thresh, finalPreds, thresh)
+
+  write.csv(subA %>% mutate(Pred = finalPreds), file = paste0("2021/SubmissionFiles/Submission", mNames[modelNum], "_AwinStage2.csv"), 
+            row.names = FALSE)
+  
+print(paste0(mNames[modelNum], "_Awin"))
+}
+
+# Obtaining MOV predictions for Kaggle submission
+kaggleMOVs <- setNames(lapply(predCalc(modelData = finalDesign, 
+                            designMat = model.matrix(outcome ~ ., mutate(finalDesign, outcome = 0)), model = "MOV"),
+                            FUN = function(x){x <- as.matrix(x); as.numeric(x)[1:nrow(x)]}), mNames)
+
+# Reading in blank MOV submission files
+subA <- read_csv("2021/SubmissionFileA.csv") %>% dplyr::select(-X1) %>% 
+  mutate(Pred = kaggleMOVs$NNet)
+subB <- read_csv("2021/SubmissionFileB.csv") %>% dplyr::select(-X1) %>% 
+  mutate(Pred = kaggleMOVs$randomForest)
+
+# Neural network MOV submission
+write.csv(subA, file = paste0("2021/SubmissionFiles/Submission", 
+                              "NNet", "_", "MOV", "Stage2.csv"), 
+          row.names = FALSE)
+
+# Random forest MOV submission
+write.csv(subB, file = paste0("2021/SubmissionFiles/Submission", 
+                              "randomForest", "_", "MOV", "Stage2.csv"), 
+          row.names = FALSE)
