@@ -17,9 +17,9 @@ t1 <- Sys.time()
 
 if(Sys.info()["sysname"] == "Darwin") {
   setwd("/Volumes/GoogleDrive/My Drive/Other/Fun/March Madness")
-  stageDir <- "/Volumes/GoogleDrive/My Drive/Other/Fun/March Madness/2022/ncaam-march-mania-2021/MDataFiles_Stage1/"
+  stageDir <- "/Volumes/GoogleDrive/My Drive/Other/Fun/March Madness/2022/mens-march-mania-2022/MDataFiles_Stage1/"
 } else {
-stageDir <- "2022/ncaam-march-mania-2021/MDataFiles_Stage1/"
+stageDir <- "2022/mens-march-mania-2022/MDataFiles_Stage1/"
 }
 
 # Importing & Cleaning Box Score Data -------------------------------------
@@ -551,7 +551,6 @@ plot(cvModel)
 coef(cvModel, s = "lambda.min")
 
 # Important predictors from lasso model (kept for both A and B and for and against):
-
 fitRes <- data.frame(Predictor = coef(cvModel, s = "lambda.min") %>% 
                        as.matrix() %>% as.data.frame() %>% rownames(), 
            Value = coef(cvModel, s = "lambda.min") %>% as.matrix() %>% 
