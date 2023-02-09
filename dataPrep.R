@@ -49,8 +49,8 @@ confInfo <- read_csv(paste0(stageDir, paste0(ifelse(womens, "W", "M"), "TeamConf
   rename(Conference = Description) %>% dplyr::select(Season, TeamID, Conference)
 
 # Merging tournament and regular season data 
-# and adding conference info & possession column
-# POSS calculation from https://thepowerrank.com/cbb-analytics/
+# and adding conference info, possession, and efficiency columns
+# POSS calculation from https://thepowerrank.com/cbb-analytics/ and https://kenpom.com/blog/ratings-glossary/
 fullRaw <- bind_rows(regRaw, tourneyRaw) %>% 
   mutate(LLoc = case_when(WLoc == "H" ~ "A",
                           WLoc == "A" ~ "H",
@@ -64,7 +64,14 @@ fullRaw <- bind_rows(regRaw, tourneyRaw) %>%
   arrange(Season, DayNum, WTeamID) %>% 
   mutate(WPoss = ((WFGA - WOR + WTO + (0.475 * WFTA)) + 
                     (LFGA - LOR + LTO + (0.475 * LFTA))) / 2,
-         LPoss = WPoss, GameID = row_number(), Afix_mov = WScore - LScore,)
+         LPoss = WPoss, GameID = row_number(), 
+         Afix_mov = WScore - LScore,
+         WScore_Eff = WScore / WPoss,
+         LScore_Eff = LScore / LPoss,
+         WMargin_Eff = Afix_mov / WPoss,
+         LMargin_Eff = Afix_mov / LPoss,
+         WPyth = (WScore_Eff^11.5) / (WScore_Eff^11.5 + LScore_Eff^11.5),
+         LPyth = (LScore_Eff^11.5) / (WScore_Eff^11.5 + LScore_Eff^11.5))
 
 # Creating duplicate rows to be agnostic to team winning or not
 # and allow calculating rolling statistics
@@ -435,6 +442,8 @@ t2 - t1
 
 # KenPom 101: What the college basketball metric system is and how it ranks Michigan: https://www.maizenbrew.com/2019/10/23/20928669/kenpom-explained-what-it-means-michigan-basketball-ranking
 
+if(FALSE) {
+
 # Function for calculating game prediction from metric values home: -1 for away, 0 for neutral, 1 for home
 metricPred <- function(mOff, mDef, homeAdv = 0.1, home = 0) {
   return((mDef + mOff) / 2 + home*homeAdv)
@@ -595,6 +604,107 @@ addMetric <- function(boxscores,
   }
 }
 
+addMetric_Old <- function(boxscores, 
+                      kVal = 0.5, 
+                      startOff = 1, 
+                      startDef = 1, 
+                      tau = 0.006,
+                      homeAdvantage = 0.03,
+                      centerFun = mean, returnRecent = FALSE) {
+  
+  # Sorting rows to start
+  boxscores <- boxscores %>% dplyr::arrange(Season, DayNum)
+  
+  seasons <- unique(boxscores$Season)
+  nSeasons <- length(seasons)
+  output <- vector("list", nSeasons)
+  
+  newTeams <- unique(c(dplyr::pull(dplyr::filter(boxscores, Season == seasons[1]), Afix_TeamID), 
+                       dplyr::pull(dplyr::filter(boxscores, Season == seasons[1]), Bfix_TeamID)))
+  
+  # Starting values
+  mStarts <- data.frame(TeamID = newTeams,
+                        adjMetricOff = startOff, adjMetricDef = startDef)
+  
+  pb <- progress::progress_bar$new(total = nSeasons)
+  
+  for(s in 1:nSeasons) {
+    seasonData <- boxscores %>% dplyr::filter(Season == seasons[s])
+    
+    homes <- ifelse(seasonData$Afix_Loc == "N", 0,
+                    ifelse(seasonData$Afix_Loc == "A", -1,
+                           ifelse(seasonData$Afix_Loc == "H", 1, NA)))
+    
+    mets <- data.frame(team = newTeams, adjMetricOff = mStarts$adjMetricOff, 
+                       adjMetricDef = mStarts$adjMetricDef)
+    
+    # Initialize metric columns
+    seasonData <- seasonData %>% 
+      dplyr::left_join(mStarts, by = c("Afix_TeamID" = "TeamID")) %>% 
+      dplyr::rename(A_adjMetricOff = adjMetricOff,
+                    A_adjMetricDef = adjMetricDef) %>% 
+      dplyr::left_join(mStarts, by = c("Bfix_TeamID" = "TeamID")) %>% 
+      dplyr::rename(B_adjMetricOff = adjMetricOff,
+                    B_adjMetricDef = adjMetricDef) 
+    
+    for(i in 1:nrow(seasonData)) {
+      # Storing current metric values
+      Ainds <- mets$team == seasonData$Afix_TeamID[i]
+      Binds <- mets$team == seasonData$Bfix_TeamID[i]
+      seasonData$A_adjMetricOff[i] <- mets$adjMetricOff[Ainds]
+      seasonData$B_adjMetricDef[i] <- mets$adjMetricDef[Binds]
+      
+      # Metric prediction
+      predA <- metricPred(mOff = seasonData$A_adjMetricOff[i],
+                          mDef = seasonData$B_adjMetricDef[i], 
+                          home = homes[i], 
+                          homeAdv = homeAdvantage)
+      
+      predB <- metricPred(mOff = seasonData$B_adjMetricOff[i],
+                          mDef = seasonData$A_adjMetricDef[i], 
+                          home = homes[i]*(-1), 
+                          homeAdv = homeAdvantage)
+      
+      # Calculating new metric values
+      newAOff <- metricUpdate(metric = seasonData$A_adjMetricOff[i], pred = predA,
+                              actual = seasonData$A_metric[i], k = kVal)
+      newBDef <- seasonData$B_adjMetricDef[i] - (seasonData$A_adjMetricOff[i] - newAOff)
+      
+      newBOff <- metricUpdate(metric = seasonData$B_adjMetricOff[i], pred = predB,
+                              actual = seasonData$B_metric[i], k = kVal)
+      newADef <- seasonData$A_adjMetricDef[i] - (seasonData$B_adjMetricOff[i] - newBOff)
+      
+      # Updating metric values
+      mets$adjMetricOff[Ainds] <- newAOff
+      mets$adjMetricDef[Binds] <- newBDef
+      
+      mets$adjMetricOff[Binds] <- newBOff
+      mets$adjMetricDef[Ainds] <- newADef
+    }
+    
+    output[[s]] <- seasonData
+    
+    if(s < nSeasons) {
+      newSeason <- boxscores %>% dplyr::filter(Season == seasons[s+1])
+      newTeams <- unique(c(newSeason$Afix_TeamID, newSeason$Bfix_TeamID))
+      
+      newMets <- metricSeasonReset(oldMets = mets %>% mutate(Season = seasonData$Season[1]),
+                                   teamIDs = newTeams, center = centerFun)
+      
+      mStarts <- newMets
+    }
+    
+    # Progress bar update
+    pb$tick()
+  }
+  if(returnRecent == FALSE) {
+    return(bind_rows(output))
+  } else {
+    return(list(metData = bind_rows(output), newMets = mets))
+  }
+}
+
+
 # Calculating adjusted metric values across all seasons
 bs <- fullRaw1 %>% 
   mutate(A_metric = A_Score / A_Poss,
@@ -631,8 +741,7 @@ metRes %>% pivot_longer(cols = c(A_adjMetricOff, A_adjMetricDef, B_adjMetricOff,
   ggplot(aes(x = Season, y = Value, color = Metric, linetype = Category)) + 
   geom_line(aes(x = Season)) + labs(title = "Scoring Efficiency Across Seasons") + 
   theme_bw()
-
-
+}
 
 # Massey Ordinal Rankings -------------------------------------------------
 
@@ -652,7 +761,7 @@ if(womens == FALSE) {
                                   SystemName == "MAS" ~ "Massey",
                                   SystemName == "POM" ~ "Pomeroy",
                                   TRUE ~ SystemName)) %>% 
-    pivot_wider(id_cols = c(Season, DayNum, TeamID, SystemName), 
+    pivot_wider(id_cols = c(Season, DayNum, TeamID), 
                 names_from = SystemName, values_from = OrdinalRank, values_fill = NA, 
                 values_fn = function(x){x[1]}) %>% 
     arrange(Season, DayNum) %>% group_by(Season, TeamID) %>% 
@@ -801,6 +910,14 @@ if(womens == FALSE) {
 }
 
 
+# Add Pythagorean Winning Percentage --------------------------------------
+
+# Formula from Ken Pom: https://kenpom.com/blog/ratings-glossary/
+# Ken Pom uses 11.5 for the exponent, but there is not one correct value as others use 13.91
+expValue <- 11.5
+eloMasseyAPMix <- eloMasseyAPMix %>% 
+mutate(Afix_Pyth = (A_for_Score_Eff^expValue) / (A_for_Score_Eff^expValue + A_against_Score_Eff^expValue),
+       Bfix_Pyth = (B_for_Score_Eff^expValue) / (B_for_Score_Eff^expValue + B_against_Score_Eff^expValue))
 
 # Sanity Checks ---------------------------------------------
 
@@ -836,6 +953,11 @@ preds <- fitRes %>% pull(Predictor) %>%
   str_split(pattern = "A_|B_|Afix|Bfix") %>% unlist() %>%
   trimws(whitespace = "_") %>% table() %>% as.data.frame() %>%
   arrange(desc(Freq)) %>% filter(`.` != "")
+
+# Since predictors are standardized, size of coefficients indicates "importance"
+predSummary <- tibble(Pred = names(coef(cvModel, s = "lambda.min")[, 1]), 
+                      Coeff = coef(cvModel, s = "lambda.min")[, 1]) %>% 
+  arrange(desc(abs(Coeff)))
 
 if(womens == FALSE) {
   # Creating first-order design matrix for model fitting
@@ -900,6 +1022,12 @@ if(womens == FALSE) {
     mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
     as.matrix()
 }
+
+# Checking predictor effects across time ----------------------------------
+
+
+
+# Saving objects for model fitting ----------------------------------------
 
 # # Fitting lasso-penalized model to try & drop more predictors
 # library(glmnet)
