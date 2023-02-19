@@ -8,10 +8,12 @@
 library(tidyverse)
 library(dtplyr)
 library(furrr)
-library(readr)
 library(progress)
 library(mice)
 library(ranger)
+library(glmnet)
+library(patchwork)
+library(RColorBrewer)
 
 t1 <- Sys.time()
 
@@ -63,7 +65,7 @@ fullRaw <- bind_rows(regRaw, tourneyRaw) %>%
   rename(WConference = ConferenceW, LConference = ConferenceL) %>%
   arrange(Season, DayNum, WTeamID) %>% 
   mutate(WPoss = ((WFGA - WOR + WTO + (0.475 * WFTA)) + 
-                    (LFGA - LOR + LTO + (0.475 * LFTA))) / 2,
+                  (LFGA - LOR + LTO + (0.475 * LFTA))) / 2,
          LPoss = WPoss, GameID = row_number(), 
          Afix_mov = WScore - LScore,
          WScore_Eff = WScore / WPoss,
@@ -71,7 +73,11 @@ fullRaw <- bind_rows(regRaw, tourneyRaw) %>%
          WMargin_Eff = Afix_mov / WPoss,
          LMargin_Eff = Afix_mov / LPoss,
          WPyth = (WScore_Eff^11.5) / (WScore_Eff^11.5 + LScore_Eff^11.5),
-         LPyth = (LScore_Eff^11.5) / (WScore_Eff^11.5 + LScore_Eff^11.5))
+         LPyth = (LScore_Eff^11.5) / (WScore_Eff^11.5 + LScore_Eff^11.5),
+         WTOrate = WTO / WPoss, # turnover rate = turnovers / (possessions)
+         LTOrate = LTO / LPoss,
+         WORrate = WOR / (WFGA - WFGM), # OR rate = OR / (own shots missed)
+         LORrate = LOR / (LFGA - LFGM))
 
 # Creating duplicate rows to be agnostic to team winning or not
 # and allow calculating rolling statistics
@@ -380,7 +386,7 @@ fullElo1 %>% group_by(Season) %>%
 
 # Adding in team name
 teamNames <- read_csv(paste0(stageDir, ifelse(womens, "W", "M"), "Teams.csv")) %>% 
-  dplyr::select(-FirstD1Season, -LastD1Season)
+  dplyr::select(TeamID, TeamName)
 
 # Visualizing elo across season
 if(FALSE) {
@@ -909,7 +915,6 @@ if(womens == FALSE) {
              data = eloMasseyAPMix))
 }
 
-
 # Add Pythagorean Winning Percentage --------------------------------------
 
 # Formula from Ken Pom: https://kenpom.com/blog/ratings-glossary/
@@ -1025,7 +1030,153 @@ if(womens == FALSE) {
 
 # Checking predictor effects across time ----------------------------------
 
+# Function to obtain size of coefficients for lasso penalized model to plot over time
+predImportance <- function(seasons = 2003, drops = "ratings", modelData = eloMasseyAPMix) {
+  
+  nseasons <- length(seasons)
+  
+  if(drops == "ratings") {
+    modelData <- modelData %>% 
+      dplyr::select(-contains(c("Moore", "Sagarin", "Pomeroy", "AP", "elo")))
+  } else if(drops == "boxscores") {
+    modelData <- modelData %>% 
+      dplyr::select(Season:Bfix_count,
+                    contains(c("Moore", "Sagarin", "Pomeroy", "AP", "elo")))
+  }
+  
+  # Creating design matrix
+  modelMat <- modelData %>% 
+    dplyr::filter(Season %in% seasons) %>% 
+    dplyr::select(-Afix_count, -Bfix_count,
+                  -Season, -DayNum, -GameID, -Afix_TeamID,
+                  -Bfix_TeamID, -Afix_Conference,
+                  -Bfix_Conference, -Afix_mov) %>% 
+    model.matrix(object = formula(Afix_win ~ 0 + .)) %>% 
+    as.data.frame() %>% 
+    mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
+    as.matrix()
+  
+  # Fitting lasso-penalized model
+  set.seed(1994)
+  cvMod <- glmnet::cv.glmnet(x = modelMat, 
+                               y = modelData %>% 
+                                 dplyr::filter(Season %in% seasons) %>% dplyr::pull(Afix_win),
+                       family = "binomial", type.measure = "class",
+                       nfolds = 10)
+  
+  # Since predictors are standardized, size of coefficients indicates "importance"
+  overallRes <- tibble(Pred = names(coef(cvMod, s = "lambda.min")[, 1]), 
+                        Coeff = coef(cvMod, s = "lambda.min")[, 1]) %>% 
+    arrange(desc(abs(Coeff))) %>%
+    mutate(Pred = str_remove_all(str_sub(Pred, start = 2, end = -1),
+                                 pattern = "fix_"),
+           Pred = case_when(str_sub(Pred, 1, 1) == "_" ~ str_sub(Pred, start = 2, end = -1),
+                            TRUE ~ Pred)) %>% 
+    group_by(Pred) %>% dplyr::summarize(Size = mean(abs(Coeff))) %>% 
+    ungroup() %>% mutate(Season = ifelse(nseasons == 1, seasons, 
+                                         paste0(min(seasons), "-", max(seasons)))) %>% 
+    dplyr::filter(!str_detect(Pred, pattern = "Intercept"))
+  
+  return(list(overallRes = overallRes, 
+              medianAccuracy = 1 - median(cvMod[["cvm"]]),
+              meanAccuracy = 1 - mean(cvMod[["cvm"]])))
+}
 
+# Joint importance of boxscore metrics
+boxscoreImps <- purrr::map(.f = predImportance, .x = 2003:2022,
+                        drops = "ratings", modelData = eloMasseyAPMix)
+
+# Joint importance of rating metrics
+ratingsImps <- map(.f = predImportance, .x = 2003:2022,
+                   drops = "boxscores", modelData = eloMasseyAPMix)
+
+# Function for plotting predictor & model performances across seasons
+impPlotter <- function(impRes = boxscoreImps, nPreds = NULL, seasons = "all") {
+  
+  # Tidy summary output
+  modSummary <- map_dfr(.x = impRes, .f = function(x) {
+    ret <- x[["overallRes"]]
+    ret$`Full model accuracy` <- x[["meanAccuracy"]]
+    return(ret)})
+  
+  if(length(seasons) > 1) {
+    modSummary <- modSummary %>% dplyr::filter(Season %in% seasons)
+  }
+  
+  modSummary <- modSummary %>% 
+    dplyr::mutate(Pred = fct_reorder(Pred, Size, .fun = mean, .desc = TRUE),
+                  Pred = fct_recode(Pred, "Away" = "LocA", "Home" = "LocH",
+                                    "Neutral" = "LocN"))
+  
+  # Most important predictors
+  preds <- modSummary %>% group_by(Pred) %>% dplyr::summarize(Size = mean(Size)) %>% 
+    ungroup() %>% dplyr::arrange(desc(Size)) %>% pull(Pred)
+  
+  if(is.null(nPreds)) {
+    nPreds <- length(preds)
+  }
+  
+  # Color palette
+  colourCount <- length(unique(modSummary$Pred))
+  getPalette <- colorRampPalette(brewer.pal(9, "Set1"))
+  set.seed(1994)
+  myColors <- sample(getPalette(colourCount), size = colourCount, replace = FALSE)
+    
+# Scatter plot of accuracy & predictor performance across time
+scatGG <- modSummary %>% 
+  dplyr::filter(Pred %in% preds[1:nPreds]) %>% 
+  ggplot(aes(x = Season, y = Size, color = Pred)) +
+  geom_point() +
+  geom_smooth(se = FALSE) +
+  geom_smooth(aes(x = Season, y = `Full model accuracy`), 
+              color = "black", se = FALSE, linetype = "dotted") +
+  scale_y_continuous(limits = c(0, 1),
+                     sec.axis = dup_axis(name="Model classification accuracy")) +
+  scale_x_continuous(breaks = unique(modSummary$Season)) +
+  scale_color_manual(values = myColors) +
+  geom_point(aes(x = Season, y = `Full model accuracy`), color = "black") +
+  labs(title = "Predictor importance & classification accuracy of LASSO GLM",
+       subtitle = paste0("Best: ", 
+      sprintf("%.3f", round(modSummary %>% slice_max(`Full model accuracy`, n = 1, with_ties = FALSE) %>% pull(`Full model accuracy`), 3)), 
+       " in ", 
+      modSummary %>% slice_max(`Full model accuracy`, n = 1, with_ties = FALSE) %>% pull(`Season`),
+       ", Worst: ", 
+      sprintf("%.3f", round(modSummary %>% slice_min(`Full model accuracy`, n = 1, with_ties = FALSE) %>% pull(`Full model accuracy`), 3)), 
+       " in ",
+      modSummary %>% slice_min(`Full model accuracy`, n = 1, with_ties = FALSE) %>% pull(`Season`)),
+       y = "Predictor importance (coefficient size)",
+      color = "Predictor") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+# Bar plot of importance values
+barGG <- modSummary %>% group_by(Pred) %>% 
+  summarize(Size = mean(Size)) %>% ungroup() %>% 
+  ggplot(aes(x = fct_reorder(Pred, Size), y = Size,
+             fill = Pred)) +
+  geom_col(color = "black") +
+  scale_fill_manual(values = myColors) +
+  labs(x = "Predictor",
+       y = "Average predictor importance (coefficient size)",
+       caption = "Predictors standardized prior to model fitting") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.10))) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid = element_blank())
+
+return(scatGG / barGG)
+}
+
+# Plotting for box scores
+ratingsRes <- impPlotter(impRes = ratingsImps)
+ratingsRes
+
+impPlotter(impRes = ratingsImps, seasons = 2010:2022)
+
+# Plotting for box scores
+boxRes <- impPlotter(impRes = boxscoreImps, nPreds = 8, seasons = 2010:2022)
+boxRes
 
 # Saving objects for model fitting ----------------------------------------
 
