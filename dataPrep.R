@@ -77,7 +77,11 @@ fullRaw <- bind_rows(regRaw, tourneyRaw) %>%
          WTOrate = WTO / WPoss, # turnover rate = turnovers / (possessions)
          LTOrate = LTO / LPoss,
          WORrate = WOR / (WFGA - WFGM), # OR rate = OR / (own shots missed)
-         LORrate = LOR / (LFGA - LFGM))
+         LORrate = LOR / (LFGA - LFGM),
+         Wwinperc = Afix_mov > 0,
+         Lwinperc = Afix_mov < 0,
+         WLuck = Wwinperc - WPyth,
+         LLuck = Lwinperc - LPyth)
 
 # Creating duplicate rows to be agnostic to team winning or not
 # and allow calculating rolling statistics
@@ -446,28 +450,47 @@ t2 - t1
 # Efficiency discussion from Ken Pom: https://kenpom.com/blog/ratings-methodology-update/
 # Explore adjusted efficiencies on offense and defense using principles from Dean Oliver: http://www.rawbw.com/~deano/articles/kalman.html
 
+# Another explanation of Ken Pom metrics: https://kenpom.com/blog/ratings-explanation/
+
 # KenPom 101: What the college basketball metric system is and how it ranks Michigan: https://www.maizenbrew.com/2019/10/23/20928669/kenpom-explained-what-it-means-michigan-basketball-ranking
 
 if(FALSE) {
 
 # Function for calculating game prediction from metric values home: -1 for away, 0 for neutral, 1 for home
-metricPred <- function(mOff, mDef, homeAdv = 0.1, home = 0) {
-  return((mDef + mOff) / 2 + home*homeAdv)
+metricPred <- function(aOff, aDef, bOff, bDef, homeAdv = 0.03, home = 0, steep = 12) {
+  eVal <- exp(steep*((aOff - bDef) - (bOff - aDef) + home*homeAdv))
+  return(eVal / (1 + eVal))
 }
 
 # Function for calculating updated metric values
 metricUpdate <- function(metric, pred, actual, k = 0.5) {
-  return(metric + k*(actual - pred))
+  actual <- 1 / (1 + 10^(actual * 4))
+  return(metric*k*(actual / pred))
+}
+
+# Logistic-based function for smoothing adjusted metric change across season
+# steepness: Steepness of inverse logit function for weights
+# kfloor: controls the lower asymptote of the inverse logit function
+# ngames: number of games to 'standardize' average of Team A and Team B's game number by
+smoothFun <- function(x, steepness = 2, kfloor = 0.10, ngames = 30) {
+  x <- (x - mean(1:ngames)) / sd(1:ngames)
+  (exp(-steepness*(x - 0.50)) / (1 + exp(-steepness*(x - 0.50))) + kfloor) / (1 + kfloor)
 }
 
 # Function for calculating game prediction from metric values home: -1 for away, 0 for neutral, 1 for home
-metricPred_Old <- function(mOff, mDef, homeAdv = 0.1, home = 0) {
+metricPred_old <- function(mOff, mDef, homeAdv = 0.1, home = 0) {
   return((mDef + mOff) / 2 + home*homeAdv)
 }
 
 # Function for calculating updated metric values
-metricUpdate_Old <- function(metric, pred, actual, k = 0.5) {
+metricUpdate_old <- function(metric, pred, actual, k = 0.5) {
   return(metric + k*(actual - pred))
+}
+
+# Predicted probability of winning
+metricPredProb <- function(m1, m2, homeAdv = 0.03, home = 0, steep = 12) {
+  eVal <- exp(steep*((aOff - bDef) - (bOff - aDef) + home*homeAdv))
+  return(eVal / (1 + eVal))
 }
 
 # Function to reset team metrics to average of previous season and conference average
@@ -552,6 +575,10 @@ addMetric <- function(boxscores,
       dplyr::left_join(mStarts, by = c("Bfix_TeamID" = "TeamID")) %>% 
       dplyr::rename(B_adjMetricOff = adjMetricOff,
                     B_adjMetricDef = adjMetricDef) 
+    
+    seasonData <- seasonData %>% 
+      dplyr::mutate(k = smoothFun(x = (Afix_count + Bfix_count) / 2, 
+                                  steepness = 2, kfloor = 0.20))
     
       for(i in 1:nrow(seasonData)) {
         # Storing current metric values
@@ -710,13 +737,23 @@ addMetric_Old <- function(boxscores,
   }
 }
 
+# Effect of being home / away
+fullRaw1 %>% 
+  mutate(A_metric = A_Score / A_Poss,
+         B_metric = B_Score / B_Poss) %>% 
+  group_by(Afix_Loc) %>% 
+  summarize(A_metric = mean(A_metric), B_metric = mean(B_metric))
 
 # Calculating adjusted metric values across all seasons
 bs <- fullRaw1 %>% 
   mutate(A_metric = A_Score / A_Poss,
          B_metric = B_Score / B_Poss) %>% 
   select(Season, DayNum, Afix_TeamID, Bfix_TeamID, Afix_Loc, Afix_mov, Afix_win, 
-         A_metric, B_metric)
+         A_metric, B_metric) %>% 
+  group_by(Season, Afix_TeamID) %>% arrange(DayNum) %>% 
+  mutate(Afix_count = seq(n())) %>% ungroup() %>% 
+  group_by(Season, Bfix_TeamID) %>% arrange(DayNum) %>% 
+  mutate(Bfix_count = seq(n()))
 
 if(FALSE) {
 boxscores = bs 
@@ -730,11 +767,11 @@ returnRecent = FALSE
 
 # Trying using points per possessoion (offensive efficiency)
 metRes <- addMetric(boxscores = bs, 
-                    kVal = 0.01,
+                    kVal = 0.001,
                     startOff = 1.02,
                     startDef = 1.02, 
                     centerFun = mean,
-                    homeAdvantage = 0.05, 
+                    homeAdvantage = 0.03, 
                     returnRecent = FALSE)
 
 # Plotting as sanity check
@@ -919,10 +956,13 @@ if(womens == FALSE) {
 
 # Formula from Ken Pom: https://kenpom.com/blog/ratings-glossary/
 # Ken Pom uses 11.5 for the exponent, but there is not one correct value as others use 13.91
+# Also adding in Luck: difference between actual winning % & Pythagorean expected winning %
 expValue <- 11.5
 eloMasseyAPMix <- eloMasseyAPMix %>% 
 mutate(Afix_Pyth = (A_for_Score_Eff^expValue) / (A_for_Score_Eff^expValue + A_against_Score_Eff^expValue),
-       Bfix_Pyth = (B_for_Score_Eff^expValue) / (B_for_Score_Eff^expValue + B_against_Score_Eff^expValue))
+       Bfix_Pyth = (B_for_Score_Eff^expValue) / (B_for_Score_Eff^expValue + B_against_Score_Eff^expValue),
+       Afix_Luck = A_for_winperc - Afix_Pyth,
+       Bfix_Luck = B_for_winperc - Bfix_Pyth)
 
 # Sanity Checks ---------------------------------------------
 
@@ -1037,7 +1077,7 @@ predImportance <- function(seasons = 2003, drops = "ratings", modelData = eloMas
   
   if(drops == "ratings") {
     modelData <- modelData %>% 
-      dplyr::select(-contains(c("Moore", "Sagarin", "Pomeroy", "AP", "elo")))
+      dplyr::select(-contains(c("Moore", "Sagarin", "Pomeroy", "AP")))
   } else if(drops == "boxscores") {
     modelData <- modelData %>% 
       dplyr::select(Season:Bfix_count,
@@ -1083,12 +1123,8 @@ predImportance <- function(seasons = 2003, drops = "ratings", modelData = eloMas
 }
 
 # Joint importance of boxscore metrics
-boxscoreImps <- purrr::map(.f = predImportance, .x = 2003:2022,
+boxscoreImps <- purrr::map(.f = predImportance, .x = min(eloMasseyAPMix$Season):max(eloMasseyAPMix$Season),
                         drops = "ratings", modelData = eloMasseyAPMix)
-
-# Joint importance of rating metrics
-ratingsImps <- map(.f = predImportance, .x = 2003:2022,
-                   drops = "boxscores", modelData = eloMasseyAPMix)
 
 # Function for plotting predictor & model performances across seasons
 impPlotter <- function(impRes = boxscoreImps, nPreds = NULL, seasons = "all") {
@@ -1169,14 +1205,20 @@ return(scatGG / barGG)
 }
 
 # Plotting for box scores
-ratingsRes <- impPlotter(impRes = ratingsImps)
-ratingsRes
-
-impPlotter(impRes = ratingsImps, seasons = 2010:2022)
-
-# Plotting for box scores
 boxRes <- impPlotter(impRes = boxscoreImps, nPreds = 8, seasons = 2010:2022)
 boxRes
+
+if(womens == FALSE) {
+  # Joint importance of rating metrics
+  ratingsImps <- map(.f = predImportance, .x = min(eloMasseyAPMix$Season):max(eloMasseyAPMix$Season),
+                     drops = "boxscores", modelData = eloMasseyAPMix)
+  
+  # Plotting for box scores
+  ratingsRes <- impPlotter(impRes = ratingsImps)
+  ratingsRes
+  
+  impPlotter(impRes = ratingsImps, seasons = 2010:2022)
+}
 
 # Saving objects for model fitting ----------------------------------------
 
