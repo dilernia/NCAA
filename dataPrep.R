@@ -21,19 +21,16 @@ t1 <- Sys.time()
 # womens: whether to create modelling data for Men's (womens = FALSE) or Womens Tourney (womens = TRUE)
 # stage: first (stage = 1) or second stage (stage = 2) of Tourney competition
 # tourneyYear: year of tournament to forecast
-womens <- FALSE
+womens <- TRUE
 stage <- 2
 tourneyYear <- 2023
 
 # Setting file paths
 if(Sys.info()["sysname"] == "Darwin") {
   setwd("/Volumes/GoogleDrive/My Drive/Other/Fun/March Madness")
-  stageDir <- paste0("/Volumes/GoogleDrive/My Drive/Other/Fun/March Madness/", tourneyYear, 
-                     ifelse(womens, "-Womens/womens", "/mens"), 
-                     "-march-mania-", tourneyYear, "/", ifelse(womens, "W", "M"), "DataFiles_Stage", stage, "/")
+  stageDir <- paste0("/Volumes/GoogleDrive/My Drive/Other/Fun/March Madness/", tourneyYear, "/march-machine-learning-mania-", tourneyYear, "/")
 } else {
-  stageDir <- paste0(tourneyYear, ifelse(womens, "-Womens/womens", "/mens"), 
-                     "-march-mania-", tourneyYear, "/", ifelse(womens, "W", "M"), "DataFiles_Stage", stage, "/")
+  stageDir <- paste0(tourneyYear, "/march-machine-learning-mania-", tourneyYear, "/")
 }
 
 # Importing & Cleaning Box Score Data -------------------------------------
@@ -53,6 +50,7 @@ confInfo <- read_csv(paste0(stageDir, paste0(ifelse(womens, "W", "M"), "TeamConf
 # Merging tournament and regular season data 
 # and adding conference info, possession, and efficiency columns
 # POSS calculation from https://thepowerrank.com/cbb-analytics/ and https://kenpom.com/blog/ratings-glossary/
+# Rate statistics from Dean Oliver: https://www.basketball-reference.com/about/factors.html
 fullRaw <- bind_rows(regRaw, tourneyRaw) %>% 
   mutate(LLoc = case_when(WLoc == "H" ~ "A",
                           WLoc == "A" ~ "H",
@@ -74,14 +72,20 @@ fullRaw <- bind_rows(regRaw, tourneyRaw) %>%
          LMargin_Eff = Afix_mov / LPoss,
          WPyth = (WScore_Eff^11.5) / (WScore_Eff^11.5 + LScore_Eff^11.5),
          LPyth = (LScore_Eff^11.5) / (WScore_Eff^11.5 + LScore_Eff^11.5),
-         WTOrate = WTO / WPoss, # turnover rate = turnovers / (possessions)
-         LTOrate = LTO / LPoss,
-         WORrate = WOR / (WFGA - WFGM), # OR rate = OR / (own shots missed)
-         LORrate = LOR / (LFGA - LFGM),
-         Wwinperc = Afix_mov > 0,
-         Lwinperc = Afix_mov < 0,
-         WLuck = Wwinperc - WPyth,
-         LLuck = Lwinperc - LPyth)
+         WeFG_perc = (WFGM + 0.5 * WFGM3) / WFGA,
+         LeFG_perc = (LFGM + 0.5 * LFGM3) / LFGA,
+         WAst_rate = WAst / WFGM,
+         LAst_rate = LAst / LFGM,
+         WTO_rate = WTO / (WTO + WFGA + (0.475 * WFTA)), # turnover rate = turnovers / (possessions)
+         LTO_rate = LTO / (LTO + LFGA + (0.475 * LFTA)),
+         WOR_rate = WOR / (WOR + LDR), # OR rate = OR / (own shots missed)
+         LOR_rate = LOR / (LOR + WDR),
+         Wwin_rate = Afix_mov > 0,
+         Lwin_rate = Afix_mov < 0,
+         WFT_factor = WFTM / WFGA,
+         LFT_factor = LFTM / LFGA,
+         WLuck = Wwin_rate - WPyth,
+         LLuck = Lwin_rate - LPyth)
 
 # Creating duplicate rows to be agnostic to team winning or not
 # and allow calculating rolling statistics
@@ -457,15 +461,13 @@ t2 - t1
 if(FALSE) {
 
 # Function for calculating game prediction from metric values home: -1 for away, 0 for neutral, 1 for home
-metricPred <- function(aOff, aDef, bOff, bDef, homeAdv = 0.03, home = 0, steep = 12) {
-  eVal <- exp(steep*((aOff - bDef) - (bOff - aDef) + home*homeAdv))
-  return(eVal / (1 + eVal))
+metricPred <- function(mOff, mDef, homeAdv = 0.1, home = 0) {
+  return((mDef + mOff) / 2 + home*homeAdv)
 }
 
 # Function for calculating updated metric values
 metricUpdate <- function(metric, pred, actual, k = 0.5) {
-  actual <- 1 / (1 + 10^(actual * 4))
-  return(metric*k*(actual / pred))
+  return(metric + k*(actual - pred))
 }
 
 # Logistic-based function for smoothing adjusted metric change across season
@@ -529,15 +531,16 @@ metricSeasonReset <- function(oldMets, teamIDs, center = mean,
 # Function for adding opponent-adjusted metric values to data frame
 # boxscores: A data frame with columns Season, DayNum, Afix_TeamID,
 # Bfix_TeamID, Afix_Loc, A_metric, B_metric
-# kVal: Smoothing parameter for metric calculation
+# steep: Smoothing parameter for metric calculation
+# kVal: Second smoothing parameter for metric calculation
 # mStarts: Optional. Data frame with columns 
 # offensive (adjMetricOff) and defensive (adjMetricDef) initial adjusted metric values for unique TeamID's
 # tau: Second smoothing parameter for metric calculation
 addMetric <- function(boxscores, 
-                   kVal = 0.5, 
+                      steepness = 2, 
+                      kfloor = 0.20, 
                    startOff = 1, 
                    startDef = 1, 
-                   tau = 0.006,
                    homeAdvantage = 0.03,
                    centerFun = mean, returnRecent = FALSE) {
   
@@ -578,7 +581,7 @@ addMetric <- function(boxscores,
     
     seasonData <- seasonData %>% 
       dplyr::mutate(k = smoothFun(x = (Afix_count + Bfix_count) / 2, 
-                                  steepness = 2, kfloor = 0.20))
+                                  steepness = steepness, kfloor = kfloor))
     
       for(i in 1:nrow(seasonData)) {
         # Storing current metric values
@@ -600,11 +603,11 @@ addMetric <- function(boxscores,
         
         # Calculating new metric values
         newAOff <- metricUpdate(metric = seasonData$A_adjMetricOff[i], pred = predA,
-                          actual = seasonData$A_metric[i], k = kVal)
+                          actual = seasonData$A_metric[i], k = seasonData$k[i])
         newBDef <- seasonData$B_adjMetricDef[i] - (seasonData$A_adjMetricOff[i] - newAOff)
         
         newBOff <- metricUpdate(metric = seasonData$B_adjMetricOff[i], pred = predB,
-                                actual = seasonData$B_metric[i], k = kVal)
+                                actual = seasonData$B_metric[i], k = seasonData$k[i])
         newADef <- seasonData$A_adjMetricDef[i] - (seasonData$B_adjMetricOff[i] - newBOff)
         
         # Updating metric values
@@ -637,106 +640,6 @@ addMetric <- function(boxscores,
   }
 }
 
-addMetric_Old <- function(boxscores, 
-                      kVal = 0.5, 
-                      startOff = 1, 
-                      startDef = 1, 
-                      tau = 0.006,
-                      homeAdvantage = 0.03,
-                      centerFun = mean, returnRecent = FALSE) {
-  
-  # Sorting rows to start
-  boxscores <- boxscores %>% dplyr::arrange(Season, DayNum)
-  
-  seasons <- unique(boxscores$Season)
-  nSeasons <- length(seasons)
-  output <- vector("list", nSeasons)
-  
-  newTeams <- unique(c(dplyr::pull(dplyr::filter(boxscores, Season == seasons[1]), Afix_TeamID), 
-                       dplyr::pull(dplyr::filter(boxscores, Season == seasons[1]), Bfix_TeamID)))
-  
-  # Starting values
-  mStarts <- data.frame(TeamID = newTeams,
-                        adjMetricOff = startOff, adjMetricDef = startDef)
-  
-  pb <- progress::progress_bar$new(total = nSeasons)
-  
-  for(s in 1:nSeasons) {
-    seasonData <- boxscores %>% dplyr::filter(Season == seasons[s])
-    
-    homes <- ifelse(seasonData$Afix_Loc == "N", 0,
-                    ifelse(seasonData$Afix_Loc == "A", -1,
-                           ifelse(seasonData$Afix_Loc == "H", 1, NA)))
-    
-    mets <- data.frame(team = newTeams, adjMetricOff = mStarts$adjMetricOff, 
-                       adjMetricDef = mStarts$adjMetricDef)
-    
-    # Initialize metric columns
-    seasonData <- seasonData %>% 
-      dplyr::left_join(mStarts, by = c("Afix_TeamID" = "TeamID")) %>% 
-      dplyr::rename(A_adjMetricOff = adjMetricOff,
-                    A_adjMetricDef = adjMetricDef) %>% 
-      dplyr::left_join(mStarts, by = c("Bfix_TeamID" = "TeamID")) %>% 
-      dplyr::rename(B_adjMetricOff = adjMetricOff,
-                    B_adjMetricDef = adjMetricDef) 
-    
-    for(i in 1:nrow(seasonData)) {
-      # Storing current metric values
-      Ainds <- mets$team == seasonData$Afix_TeamID[i]
-      Binds <- mets$team == seasonData$Bfix_TeamID[i]
-      seasonData$A_adjMetricOff[i] <- mets$adjMetricOff[Ainds]
-      seasonData$B_adjMetricDef[i] <- mets$adjMetricDef[Binds]
-      
-      # Metric prediction
-      predA <- metricPred(mOff = seasonData$A_adjMetricOff[i],
-                          mDef = seasonData$B_adjMetricDef[i], 
-                          home = homes[i], 
-                          homeAdv = homeAdvantage)
-      
-      predB <- metricPred(mOff = seasonData$B_adjMetricOff[i],
-                          mDef = seasonData$A_adjMetricDef[i], 
-                          home = homes[i]*(-1), 
-                          homeAdv = homeAdvantage)
-      
-      # Calculating new metric values
-      newAOff <- metricUpdate(metric = seasonData$A_adjMetricOff[i], pred = predA,
-                              actual = seasonData$A_metric[i], k = kVal)
-      newBDef <- seasonData$B_adjMetricDef[i] - (seasonData$A_adjMetricOff[i] - newAOff)
-      
-      newBOff <- metricUpdate(metric = seasonData$B_adjMetricOff[i], pred = predB,
-                              actual = seasonData$B_metric[i], k = kVal)
-      newADef <- seasonData$A_adjMetricDef[i] - (seasonData$B_adjMetricOff[i] - newBOff)
-      
-      # Updating metric values
-      mets$adjMetricOff[Ainds] <- newAOff
-      mets$adjMetricDef[Binds] <- newBDef
-      
-      mets$adjMetricOff[Binds] <- newBOff
-      mets$adjMetricDef[Ainds] <- newADef
-    }
-    
-    output[[s]] <- seasonData
-    
-    if(s < nSeasons) {
-      newSeason <- boxscores %>% dplyr::filter(Season == seasons[s+1])
-      newTeams <- unique(c(newSeason$Afix_TeamID, newSeason$Bfix_TeamID))
-      
-      newMets <- metricSeasonReset(oldMets = mets %>% mutate(Season = seasonData$Season[1]),
-                                   teamIDs = newTeams, center = centerFun)
-      
-      mStarts <- newMets
-    }
-    
-    # Progress bar update
-    pb$tick()
-  }
-  if(returnRecent == FALSE) {
-    return(bind_rows(output))
-  } else {
-    return(list(metData = bind_rows(output), newMets = mets))
-  }
-}
-
 # Effect of being home / away
 fullRaw1 %>% 
   mutate(A_metric = A_Score / A_Poss,
@@ -753,7 +656,160 @@ bs <- fullRaw1 %>%
   group_by(Season, Afix_TeamID) %>% arrange(DayNum) %>% 
   mutate(Afix_count = seq(n())) %>% ungroup() %>% 
   group_by(Season, Bfix_TeamID) %>% arrange(DayNum) %>% 
-  mutate(Bfix_count = seq(n()))
+  mutate(Bfix_count = seq(n())) %>% 
+  filter(Season >= 2010)
+
+# Detrending Scoring Efficiencies -----------------------------------------
+
+# Looking at rolling average SE across season (is there upward drift?)
+winLength <- 3
+roll_mean_na_rm <- tibbletime::rollify(~mean(.x, na.rm = TRUE), window = winLength)
+
+# Offensive rolling avg SE
+rollMeansOff <- bs %>% group_by(Season, Afix_TeamID) %>% 
+  summarize(nGames = n(), A_metric = A_metric) %>% 
+  filter(nGames >= winLength) %>% 
+  summarize(SErollingOff = roll_mean_na_rm(A_metric),
+            Afix_count = 1:n()) %>% ungroup() %>% 
+  group_by(Season, Afix_count) %>% 
+  summarize(SEoff = mean(SErollingOff, na.rm = TRUE))
+
+# Defensive rolling avg SE
+rollMeansDef <- bs %>% group_by(Season, Bfix_TeamID) %>% 
+  summarize(nGames = n(), B_metric = B_metric) %>% 
+  filter(nGames >= winLength) %>% 
+  summarize(SErollingDef = roll_mean_na_rm(B_metric),
+            Bfix_count = 1:n()) %>% ungroup() %>% 
+  group_by(Season, Bfix_count) %>% 
+  summarize(SEdef = mean(SErollingDef, na.rm = TRUE))
+
+# Plotting average of rolling average of offensive scoring efficiency
+offGG <- rollMeansOff %>%  
+  ggplot(aes(x = Afix_count, y = SEoff, color = factor(Season))) + 
+  geom_line() +
+  labs(title = "Rolling Average Offensive Scoring Efficiency",
+       y = "Rolling average points per possession",
+       x = "Game number",
+       caption = "Each line is for a different season. \n
+       Higher volatility occurs later in season when fewer teams are incorporated in the calculated average.") +
+  ggthemes::theme_few() +
+  theme(legend.position = "none")
+
+offGG + 
+  geom_smooth(aes(x = Afix_count, y = SEoff), color = "black", method = "lm", se = FALSE)
+
+offGG + 
+  stat_smooth(aes(x = Afix_count, y = SEoff),
+              color = "black", se = FALSE,
+              method = "lm", formula = y ~ x + I(x^2))
+
+# Plotting with quadratic fit
+
+# Plotting average of rolling average of defensive scoring efficiency
+defGG <- rollMeansDef %>%  
+  ggplot(aes(x = Bfix_count, y = SEdef, color = factor(Season))) + 
+  geom_line() +
+  labs(title = "Rolling Average Defensive Scoring Efficiency",
+       y = "Rolling average points per possession",
+       x = "Game number",
+       caption = "Each line is for a different season. \n
+       Higher volatility occurs later in season when fewer teams are incorporated in the calculated average.") +
+  ggthemes::theme_few() +
+  theme(legend.position = "none")
+
+defGG + 
+  geom_smooth(aes(x = Bfix_count, y = SEdef), 
+              color = "black", method = "lm", se = FALSE)
+
+defGG + 
+  stat_smooth(aes(x = Bfix_count, y = SEdef),
+              color = "black", se = FALSE,
+              method = "lm", formula = y ~ x + I(x^2))
+
+# Interpolating to plot contours: https://stackoverflow.com/questions/65873211/empty-contour-plot-in-ggplot
+plot3D <- function(data3D, dupes = "mean") {
+  
+  data3Dclean <- data3D %>% tidyr::drop_na() %>% 
+    dplyr::rename("x" = 1, "y" = 2, "z" = 3)
+  
+  suppressWarnings(grid <- akima::interp(dplyr::pull(data3Dclean, 1), 
+                                         dplyr::pull(data3Dclean, 2),
+                                         dplyr::pull(data3Dclean, 3),
+                                         duplicate = dupes))
+  
+  griddf <- data.frame(x = rep(grid$x, ncol(grid$z)), 
+                       y = rep(grid$y, each = nrow(grid$z)), 
+                       z = as.numeric(grid$z))
+  
+  myVars <- colnames(data3D)
+  
+  griddf %>%
+    ggplot2::ggplot(ggplot2::aes(x = x, y = y, z = z)) +
+    ggplot2::geom_contour_filled(aes(x = x, 
+                                     y = y, 
+                                     z = z)) + 
+    ggplot2::geom_point(data = data3Dclean, colour="white",pch=21, 
+                        fill = "black", size = 1.5) +
+    ggplot2::labs(x = myVars[1], y = myVars[2],
+                  fill = myVars[3],
+                  title = "Three-dimensional distribution") +
+    ggplot2::theme_bw() + 
+    ggplot2::theme(text = element_text(face = "bold"), 
+                   panel.grid = element_blank(),
+                   legend.position = "bottom")
+}
+
+plot3D(rollMeansOff)
+plot3D(rollMeansDef)
+
+# Estimating trend in each season
+seModOff <- lm(SEoff ~ 1 + Afix_count + I(Afix_count^2) + factor(Season), 
+            data = rollMeansOff %>% filter(Afix_count <= 30, Season >= 2010))
+
+seModDef <- lm(SEdef ~ 1 + Bfix_count + I(Bfix_count^2) + factor(Season), 
+               data = rollMeansDef %>% filter(Bfix_count <= 30, Season >= 2010))
+
+coeffResOff <- broom::tidy(seModOff)
+coeffResDef <- broom::tidy(seModDef)
+
+# Based on p-values, the trend is significant, and the average
+# SE varies by season, but the trend does not vary by season
+
+# Detrending scoring efficiencies
+vanillaGames <- expand_grid(Afix_count = 1:30, Bfix_count = 1:30,
+                            Season = min(seModOff$xlevels$`factor(Season)`):max(seModOff$xlevels$`factor(Season)`))
+vanillaGames$expected_met_off <- predict(seModOff, newdata = vanillaGames)
+vanillaGames$expected_met_def <- predict(seModDef, newdata = vanillaGames)
+
+bsDetrended <- bs %>% left_join(vanillaGames, by = c("Season", "Afix_count", "Bfix_count")) %>% 
+  mutate(A_metric = A_metric - expected_met_off,
+         B_metric = B_metric - expected_met_def) %>% 
+  dplyr::select(-expected_met_off, -expected_met_def)
+
+rollMeansDetrendedOff <- bsDetrended %>% group_by(Season, Afix_TeamID) %>% 
+  summarize(nGames = n(), A_metric = A_metric) %>% 
+  filter(nGames >= winLength) %>% 
+  summarize(SErolling = roll_mean_na_rm(A_metric),
+            Afix_count = 1:n()) %>% ungroup() %>% 
+  group_by(Season, Afix_count) %>% 
+  summarize(SE = mean(SErolling, na.rm = TRUE))
+
+# Plotting average of rolling average of offensive scoring efficiency
+rollMeansDetrendedOff %>% 
+  ggplot(aes(x = Afix_count, y = SE, color = factor(Season))) + 
+  geom_line() +
+  geom_smooth(aes(x = Afix_count, y = SE), color = "black", method = "lm", se = FALSE) +
+  labs(title = "Rolling Average Offensive Scoring Efficiency",
+       y = "Rolling average points per possession",
+       x = "Game number",
+       caption = "Each line is for a different season. \n
+       Higher volatility occurs later in season when fewer teams are incorporated in the calculated average.") +
+  ggthemes::theme_few() +
+  theme(legend.position = "none")
+
+# Detrending scoring efficiency values within each season
+
+plot3D(rollMeansDetrendedOff)
 
 if(FALSE) {
 boxscores = bs 
@@ -767,7 +823,7 @@ returnRecent = FALSE
 
 # Trying using points per possessoion (offensive efficiency)
 metRes <- addMetric(boxscores = bs, 
-                    kVal = 0.001,
+                    kVal = 1,
                     startOff = 1.02,
                     startDef = 1.02, 
                     centerFun = mean,
@@ -791,8 +847,8 @@ metRes %>% pivot_longer(cols = c(A_adjMetricOff, A_adjMetricDef, B_adjMetricOff,
 if(womens == FALSE) {
   # Adding in Massey ordinal ranking data
   # Descriptions / info for systems: https://masseyratings.com/cb/compare.htm
-  massey <- data.table::fread(paste0(stageDir, paste0(ifelse(womens, "W", "M"), "MasseyOrdinals_thruDay128.csv"))) %>% 
-    as.data.frame() %>% rename(DayNum = RankingDayNum) 
+  massey <- data.table::fread(paste0(stageDir, "MMasseyOrdinals.csv")) %>% 
+    as.data.frame() %>% dplyr::rename(DayNum = RankingDayNum) 
   
   # Exploring which systems have collective most complete data
   # The `values_fn` option keeps first ranking when multiple for single day provided.
@@ -961,8 +1017,8 @@ expValue <- 11.5
 eloMasseyAPMix <- eloMasseyAPMix %>% 
 mutate(Afix_Pyth = (A_for_Score_Eff^expValue) / (A_for_Score_Eff^expValue + A_against_Score_Eff^expValue),
        Bfix_Pyth = (B_for_Score_Eff^expValue) / (B_for_Score_Eff^expValue + B_against_Score_Eff^expValue),
-       Afix_Luck = A_for_winperc - Afix_Pyth,
-       Bfix_Luck = B_for_winperc - Bfix_Pyth)
+       Afix_Luck = A_for_win_rate - Afix_Pyth,
+       Bfix_Luck = B_for_win_rate - Bfix_Pyth)
 
 # Sanity Checks ---------------------------------------------
 
