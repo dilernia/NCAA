@@ -2,14 +2,13 @@
 # Title: March Madness Bracket Creator
 # Author: Andrew DiLernia
 # Date: 07/19/2017
-# Purpose: Randomly generate filled out NCAA bracket given probability of team reaching each round
+# Purpose: Generate filled out NCAA bracket given Kaggle predictions
 #################
-
-# This person did it with ggplot: https://stackoverflow.com/questions/16290052/march-madness-brackets-with-ggplot2
 
 library(tidyverse)
 library(png)
-library(shadowtext)
+
+womens <- FALSE
 
 # This person did it with ggplot: https://stackoverflow.com/questions/16290052/march-madness-brackets-with-ggplot2
 bracketDraw <- function(submission, seeds, teams, ncaaLogo) {
@@ -350,15 +349,31 @@ return(empty.bracket +
 }
 
 # Inputs for drawing bracket
-mySubmission <- readr::read_csv("2021/SubmissionFiles/SubmissionLDA_AwinStage2.csv")
+seedsPath <- ifelse(womens, "2022-Womens/womens-march-mania-2022/WDataFiles_Stage2/WNCAATourneySeeds.csv",
+      "2022/mens-march-mania-2022/MDataFiles_Stage2/MNCAATourneySeeds.csv")
+mySeeds <- read_csv(paste0(seedsPath)) %>% 
+  filter(Season == 2022)
 
-mySeeds <- read_csv("2021/bracketData/MNCAATourneySeeds.csv") %>% filter(Season == 2021)
+teamsPath <- ifelse(womens, "2022-Womens/womens-march-mania-2022/WDataFiles_Stage2/WTeams.csv",
+                    "2022/mens-march-mania-2022/MDataFiles_Stage2/MTeams.csv")
 
-myTeams <- read_csv("2022/mens-march-mania-2022/MDataFiles_Stage1/MTeams.csv") %>% 
+myTeams <- read_csv(teamsPath) %>% 
   select(TeamID:TeamName)
 
 myLogo <- png::readPNG("2022/March_Madness_logo.png")
 
+mySubmission <- readr::read_csv(paste0(ifelse(womens, "2022-Womens", "2022"), "/SubmissionFiles/Submission", 
+                                       "nnet", "_Stage2.csv"))
+
 # Drawing bracket
 bracketDraw(submission = mySubmission, seeds = mySeeds, teams = myTeams,
             ncaaLogo = myLogo)
+
+lapply(X = c("cvglmnet", "cvglmnet2", "nnet"), FUN = function(model) {
+mySub <- readr::read_csv(paste0(ifelse(womens, "2022-Womens", "2022"), "/SubmissionFiles/Submission", 
+                                       model, "_Stage2.csv"))
+
+ggsave(plot = bracketDraw(submission = mySub, seeds = mySeeds, teams = myTeams,
+                          ncaaLogo = myLogo),
+       filename = paste0(ifelse(womens, "2022-Womens", "2022"), "/Brackets/", model, ".pdf"), width = 11.69, height = 8.27, units = "in")
+})
