@@ -57,6 +57,7 @@ font_add_google(name = str_to_title(fontFamily),
 library(showtext)
 library(tidyverse)
 library(png)
+library(shadowtext)
 
 showtext_auto()
 
@@ -73,7 +74,16 @@ stageDir <- paste0("march-machine-learning-mania-", tourneyYear, "/")
 
 # Function for creatin bracket
 bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "black", 
-                        fontFamily = "Passion One", textSize = 6, retData = FALSE) {
+                        fontFamily = "Passion One", textSize = 6, regions = setNames(c("SOUTH", "EAST", "MIDWEST", "WEST"),
+                        c("X", "W", "Y", "Z")), retData = FALSE) {
+  
+    region_names <- names(regions)
+    
+    showtext_auto()
+    
+  # Downloading Google fonts for plots
+  font_add_google(name = str_to_title(fontFamily), 
+                family = fontFamily)
   
   ### Helper functions
   first_evens <- function(x) {seq(from=2,to=2*x,length.out=x)}
@@ -127,7 +137,18 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   r5.verticals.start <- r5.y[1]
   r5.verticals.stop <- -r5.y[1]
   
-  empty.bracket <- ggplot() + theme_bw() + theme(axis.line=element_blank(), axis.text.x=element_blank(), axis.text.y=element_blank(), axis.ticks=element_blank(), axis.title.x=element_blank(), axis.title.y=element_blank(), panel.border=element_blank(), panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank(), panel.grid.major.y=element_blank(), panel.grid.minor.y=element_blank(), plot.margin=unit(c(0,0,-6,-6),"mm"), text=element_text(size=12,hjust=0,vjust=0)) + coord_cartesian(ylim = c(-1.05*r1.y[16],1.05*r1.y[16]), xlim = c(1.025*r1.x[1],-1.025*r1.x[1]))
+  empty.bracket <- ggplot() + 
+    theme_bw() + 
+    theme(axis.line = element_blank(), 
+          axis.text = element_blank(), 
+          axis.ticks = element_blank(), 
+          axis.title = element_blank(), 
+          panel.border = element_blank(),
+          panel.grid = element_blank(),
+          plot.margin = unit(c(0, 0, -6, -6), "mm"),
+          text = element_text(size = 12, hjust = 0, vjust = 0)) + 
+    coord_cartesian(ylim = c(-1.05*r1.y[16],1.05*r1.y[16]), 
+                    xlim = c(1.025*r1.x[1],-1.025*r1.x[1]))
   
   vec1x <- c(1, 1, -1, -1)
   vec1y <- c(1, -1, 1, -1)
@@ -181,9 +202,9 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
                           yend = r5.y*rep(c(1, -1, 1), times = 2),
                           Round = c(rep(5, times = 6)))
   
-  lineCoords$R6 <- tibble(x = r6.x[1]*vec11, 
+  lineCoords$R6 <- tibble(x = r6.x*vec11, 
                           y = r6.y*vec11, 
-                          xend = r6.x[2]*vec11, 
+                          xend = rev(r6.x)*vec11, 
                           yend = r6.y*vec11,
                           Round = c(rep(6, times = 2)))
   
@@ -199,8 +220,6 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
                           yend = -r1.y[16]*vec1y,
                           Round = rep(0, 4))
   
-  regions <- c("South", "East", "Midwest", "West")
-  
   fullCoords <- bind_rows(lineCoords) %>% 
     dplyr::mutate(Region = case_when(y < 0 & Round == 5 & x == xend ~ "Final",
                                      x < 0 & y > 0 & Round < 6 ~ regions[1],
@@ -208,6 +227,24 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
                                      x > 0 & y > 0 & Round < 6 ~ regions[3],
                                      x > 0 & y < 0 & Round < 6 ~ regions[4],
                                      TRUE ~ "Final"))
+  
+  # Coordinates for drawing team names & probabilities
+    name_coords <- fullCoords |> 
+    dplyr::filter(x != xend) |> 
+    dplyr::mutate(Xstart = case_when(Region %in% regions[3:4] ~ xend,
+                                     TRUE ~ x), 
+                  Y = y) |> 
+    dplyr::select(Round, Region, Xstart, Y) |> 
+      dplyr::group_by(Round, Region) |> 
+      dplyr::arrange(desc(Y)) |> 
+      dplyr::mutate(Matchup = rep(1:(n() / 2), each = 2)[1:n()],
+                    round_team = case_when(Round == 5 & Region %in% regions[c(1, 3)] ~ 1,
+                                           Round == 5 & Region %in% regions[c(2, 4)] ~ 2,
+                                           Round == 6 & Region %in% regions[c(1, 2)] ~ 1,
+                                           Round == 6 & Region %in% regions[c(3, 4)] ~ 2,
+                                           TRUE ~ 1:n()
+                    )) |> 
+      dplyr::ungroup()
   
   # Printing bracket with lines
   empty.bracket <- empty.bracket + 
@@ -245,14 +282,14 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
                               TRUE ~ FALSE),
            Seed1 = as.integer(str_sub(str_remove(Seed1, pattern = "a|b"), start = 2, end = -1)),
            Seed2 = as.integer(str_sub(str_remove(Seed2, pattern = "a|b"), start = 2, end = -1))) %>% 
-    mutate(Region1 = case_when(Region1 == "W" ~ regions[2],
-                               Region1 == "X" ~ regions[4],
-                               Region1 == "Y" ~ regions[3],
-                               Region1 == "Z" ~ regions[1]),
-           Region2 = case_when(Region2 == "W" ~ regions[2],
-                               Region2 == "X" ~ regions[4],
-                               Region2 == "Y" ~ regions[3],
-                               Region2 == "Z" ~ regions[1])) %>% 
+    mutate(Region1 = case_when(Region1 == region_names[2] ~ regions[2],
+                               Region1 == region_names[1] ~ regions[1],
+                               Region1 == region_names[3] ~ regions[3],
+                               Region1 == region_names[4] ~ regions[4]),
+           Region2 = case_when(Region2 == region_names[2] ~ regions[2],
+                               Region2 == region_names[1] ~ regions[1],
+                               Region2 == region_names[3] ~ regions[3],
+                               Region2 == region_names[4] ~ regions[4])) %>% 
     left_join(teams, by = c("Team1" = "TeamID")) %>% 
     left_join(teams, by = c("Team2" = "TeamID"), suffix = c("1", "2"))
   
@@ -304,14 +341,16 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   round4 <- expand_grid(Seed1 = c(1, 16, 8, 9, 5, 12, 4, 13), 
                         Seed2 = c(6, 11, 3, 14, 7, 10, 2, 15), 
                         Region1 = c(regions[2], regions[4], regions[3], regions[1])) %>% 
-    dplyr::mutate(Region2 = Region1, Round = 4, Matchup = rep(1:2, each = 128))
+    dplyr::mutate(Region2 = Region1, Round = 4, Matchup = 1)
   
-  round5 <- expand_grid(Seed1 = 1:16, Seed2 = 1:16, Region1 = c(regions[4], regions[1])) %>% 
-    dplyr::mutate(Region2 = ifelse(Region1 == regions[4], regions[2], regions[3]), Round = 5, 
-                  Matchup = rep(1:2, each = 256))
+  round5 <- expand_grid(Seed1 = 1:16, Seed2 = 1:16, 
+                        Region1 = c(regions[1], regions[3])) %>% 
+    dplyr::mutate(Region2 = ifelse(Region1 == regions[1], regions[2], regions[4]), Round = 5, 
+                  Matchup = 1)
   
-  round6 <- expand_grid(Seed1 = 1:16, Seed2 = 1:16, Region1 = c(regions[4], regions[2]),
-                        Region2 = c(regions[1], regions[3])) %>% 
+  round6 <- expand_grid(Seed1 = 1:16, Seed2 = 1:16, 
+                        Region1 = c(regions[1], regions[2]),
+                        Region2 = c(regions[3], regions[4])) %>% 
     dplyr::mutate(Round = 6, Matchup = 1)
   
   roundsWide <- bind_rows(firstFour, round1, round2, round3, 
@@ -323,10 +362,6 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   roundsLong <- roundsWide %>% 
     pivot_longer(cols = c(Seed1, Seed2), 
                  names_to = "Team", values_to = "Seed") %>% 
-    dplyr::mutate(Region1 = fct_relevel(Region1, regions[4], regions[2], 
-                                                 regions[1], regions[3]),
-                  Region2 = fct_relevel(Region2, regions[4], regions[2], 
-                                                 regions[1], regions[3])) %>% 
     arrange(Round, Region1, Matchup, Team, Seed) %>% 
     dplyr::mutate(Pred1 = sprintf('%.3f',Pred1), Pred2 = sprintf('%.3f',Pred2),
                   Winner = ifelse(Pred1 > Pred2, TeamName1, TeamName2), 
@@ -335,18 +370,18 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
                                                       " vs. ", paste0(Seed, " ", TeamName2, " (", Pred2, ")")),
                   Team == "Seed2" & PlayIn ~ paste0(paste0("(", Pred2, ") ", TeamName2, " ", Seed),
                                                       " vs. ", paste0(Seed, " ", TeamName1, " (", Pred1, ")")),
-                  Team == "Seed1" & Region1 %in% c(regions[4], regions[2]) ~ paste0(Seed, " ", TeamName1, " (", Pred1, ")"),
-                  Team == "Seed2" & Region2 %in% c(regions[4], regions[2]) ~ paste0(Seed, " ", TeamName2, " (", Pred2, ")"),
-                  Team == "Seed1" & Region1 %in% c(regions[1], regions[3]) ~ paste0("(", Pred1, ") ", TeamName1, " ", Seed),
-                  Team == "Seed2" & Region2 %in% c(regions[1], regions[3]) ~ paste0("(", Pred2, ") ", TeamName2, " ", Seed)))
+                  Team == "Seed1" & Region1 %in% c(regions[4], regions[3]) ~ paste0(Seed, " ", TeamName1, " (", Pred1, ")"),
+                  Team == "Seed2" & Region2 %in% c(regions[4], regions[3]) ~ paste0(Seed, " ", TeamName2, " (", Pred2, ")"),
+                  Team == "Seed1" & Region1 %in% c(regions[1], regions[2]) ~ paste0("(", Pred1, ") ", TeamName1, " ", Seed),
+                  Team == "Seed2" & Region2 %in% c(regions[1], regions[2]) ~ paste0("(", Pred2, ") ", TeamName2, " ", Seed)))
   
   # Printing first four play-in games
   r0Labs <- roundsLong %>% 
     dplyr::filter(Round == 0) %>% 
     dplyr::arrange(Matchup) %>% 
-    group_by(Matchup) %>% 
+    dplyr::group_by(Matchup) %>% 
     dplyr::slice(1) %>% 
-    ungroup() %>% 
+    dplyr::ungroup() %>% 
     dplyr::mutate(Xstart = c(r4.x[1], r4.x[1], 
                       -(2*r4.x[2]-r4.x[1]), 
                       -(2*r4.x[2]-r4.x[1])),
@@ -357,18 +392,18 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   r0Winners <- roundsLong %>% 
     dplyr::filter(Round == 0) %>% 
     dplyr::arrange(Matchup) %>% 
-    group_by(Matchup) %>% 
+    dplyr::group_by(Matchup) %>% 
     dplyr::slice(1) %>% 
-    ungroup() %>% 
+    dplyr::ungroup() %>% 
     pull(Winner) %>% 
     unique()
   
   playins <- roundsLong %>% 
     dplyr::filter(Round == 0) %>% 
     dplyr::arrange(Matchup) %>% 
-    group_by(Matchup) %>% 
+    dplyr::group_by(Matchup) %>% 
     dplyr::slice(1) %>% 
-    ungroup() %>% 
+    dplyr::ungroup() %>% 
     dplyr::select(TeamName1:TeamName2) %>% 
     unlist()
   
@@ -377,10 +412,11 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   # Printing round 1 teams
   r1Labs <- roundsLong %>% 
     dplyr::filter(Round == 1, !(TeamName1 %in% r0Losers), 
-                              !(TeamName2 %in% r0Losers)) %>% 
-    dplyr::mutate(Xstart = c(rep(r1.x[1], 16), rep(r1.x[1], 16),
-                      rep(-r1.x[2], 16), rep(-r1.x[2], 16)),
-                  Y = c(rep(c(rev(r1.y), r1.y), 2)*rep(c(1, -1), each = 16))+0.001)
+                              !(TeamName2 %in% r0Losers)) |> 
+    dplyr::group_by(Region1, Region2) |> 
+    dplyr::mutate(round_team = 1:n()) |> 
+    dplyr::ungroup() |> 
+    left_join(dplyr::rename(name_coords, Region1 = Region))
   
   # Winners from round 1
   r1Winners <- roundsLong %>% 
@@ -393,10 +429,11 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   r2Labs <- roundsLong %>% 
     dplyr::filter(Round == 2, TeamName1 %in% r1Winners, 
                               TeamName2 %in% r1Winners) %>% 
-    dplyr::distinct() %>% 
-    dplyr::mutate(Xstart = c(rep(r2.x[1], 8), rep(r2.x[1], 8),
-                             rep(-r2.x[2], 8), rep(-r2.x[2], 8)),
-                  Y = c(rev(r2.y), -r2.y, rev(r2.y), -r2.y))
+    dplyr::distinct() |> 
+    dplyr::group_by(Region1, Region2) |> 
+    dplyr::mutate(round_team = 1:n()) |> 
+    dplyr::ungroup() |> 
+    left_join(dplyr::rename(name_coords, Region1 = Region))
   
   # Winners from round 2
   r2Winners <- roundsLong %>% 
@@ -409,10 +446,12 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   # Printing round 3 teams
   r3Labs <- roundsLong %>% 
     dplyr::filter(Round == 3, TeamName1 %in% r2Winners, 
-                              TeamName2 %in% r2Winners) %>% distinct() %>% 
-    dplyr::mutate(Xstart = c(rep(r3.x[1], 4), rep(r3.x[1], 4),
-                             rep(-r3.x[2], 4), rep(-r3.x[2], 4)),
-                  Y = c(rev(r3.y), -r3.y, rev(r3.y), -r3.y))
+                              TeamName2 %in% r2Winners) %>% 
+    dplyr::distinct() |> 
+    dplyr::group_by(Region1, Region2) |> 
+    dplyr::mutate(round_team = 1:n()) |> 
+    dplyr::ungroup() |> 
+    left_join(dplyr::rename(name_coords, Region1 = Region))
   
   # Winners from round 3
   r3Winners <- roundsLong %>% 
@@ -427,9 +466,10 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
     dplyr::filter(Round == 4, TeamName1 %in% r3Winners, 
                               TeamName2 %in% r3Winners) %>% 
     dplyr::distinct() %>% 
-    dplyr::mutate(Xstart = c(rep(r4.x[1], 2), rep(r4.x[1], 2),
-                             rep(-r4.x[2], 2), rep(-r4.x[2], 2)),
-                  Y = c(rev(r4.y), -r4.y, rev(r4.y), -r4.y))
+    dplyr::group_by(Region1, Region2) |> 
+    dplyr::mutate(round_team = 1:n()) |> 
+    dplyr::ungroup() |> 
+    left_join(dplyr::rename(name_coords, Region1 = Region))
   
   # Winners from round 4
   r4Winners <- roundsLong %>% 
@@ -444,9 +484,19 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
     dplyr::filter(Round == 5, TeamName1 %in% r4Winners, 
                               TeamName2 %in% r4Winners) %>% 
     dplyr::distinct() %>% 
-    mutate(Xstart = c(rep(r5.x[1], 1), rep(r5.x[1], 1),
-                      rep(-r5.x[2], 1), rep(-r5.x[2], 1)),
-           Y = c(rev(r5.y), -r5.y, rev(r5.y), -r5.y))
+    dplyr::group_by(Region1, Region2) |> 
+    dplyr::mutate(round_team = 1:n()) |> 
+    dplyr::ungroup() |>  
+    left_join(
+  name_coords |> 
+  dplyr::filter(Round == 5) |> 
+    dplyr::mutate(Region1 = case_when(Region %in% regions[c(1, 2)] ~ regions[1],
+                                      Region %in% regions[c(3, 4)] ~ regions[3],
+                                      TRUE ~ NA),
+                  Region2 = case_when(Region %in% regions[c(1, 2)] ~ regions[2],
+                                      Region %in% regions[c(3, 4)] ~ regions[4],
+                                      TRUE ~ NA))
+    )
   
   # Winners from round 5
   r5Winners <- roundsLong %>% 
@@ -461,8 +511,14 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
     dplyr::filter(Round == 6, TeamName1 %in% r5Winners, 
                               TeamName2 %in% r5Winners) %>% 
     dplyr::distinct() %>% 
-    mutate(Xstart = c(rep(r6.x[1], 1), rep(-r6.x[2], 1)),
-           Y = c(r6.y, -r6.y))
+    dplyr::group_by(Region1, Region2) |> 
+    dplyr::mutate(round_team = 1:n()) |> 
+    dplyr::ungroup() |>  
+    left_join(
+  name_coords |> 
+  dplyr::filter(Round == 6) |> 
+    dplyr::select(-Region)
+    )
   
   # Winners from round 6 (grand overall winner)
   r6Winner <- roundsLong %>% 
@@ -474,18 +530,34 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   
   r7Labs <- dplyr::slice_head(r6Labs, n = 1) %>% 
     dplyr::mutate(Region1 = "Championship", Region2 = "Championship", Round = 7,
-                  Xstart = 0 - nchar(r6Winner) / 10, Y = 0, TeamName = r6Winner)
+                  Xstart = 0 - nchar(r6Winner) / 10, Y = 0, TeamName = r6Winner) |> 
+    dplyr::group_by(Region1, Region2) |> 
+    dplyr::mutate(round_team = 1:n()) |> 
+    dplyr::ungroup()
   
   # Printing filled out bracket
   sizeParam <- 3
   labData <- bind_rows(r0Labs, r1Labs, r2Labs, r3Labs, 
                        r4Labs, r5Labs, r6Labs, r7Labs)
   
+  # Adding team and regions names to bracket, 
+  # and adding small space for text above lines
   bracketGG <- empty.bracket +
-    geom_text(data = labData, aes(x = Xstart, y = Y,
+    labData |> 
+    dplyr::mutate(Y = Y + 0.005) |> 
+    geom_text(mapping = aes(x = Xstart, y = Y,
                                label = TeamName, text = TeamName),
               size = rel(textSize), hjust = 0, vjust = 0,
               family = fontFamily) +
+    geom_text(data = tibble(Region = regions,
+                                  Xstart = c(rep(unique(r4Labs$Xstart)[1], 2),
+                                             rep(unique(r3Labs$Xstart)[2], 2)),
+                                  Y = rep(c(mean(unique(r4Labs$Y)[3:4]), 
+                                            mean(unique(r4Labs$Y)[1:2])), times = 2)),
+                    aes(x = Xstart, y = Y,
+                        label = Region, text = Region), nudge_y = 0, 
+                    color = "#065cb5",
+                    size = rel(textSize*1.5)) +
     theme(text = element_text(family = fontFamily,
                               size = rel(textSize)))
   
@@ -560,7 +632,7 @@ defaultPageSize = 40) %>%
   google_font(font_family = str_to_title(fontFamily))
 }
 
-# lineColor = "black"; fontFamily = "Passion One"; textSize = 6; retData = FALSE; seeds = mySeeds; submission = nnetSubmissionAwin; teams = myTeams; textSize = 4; retData = TRUE; logo = myLogo
+# lineColor = "black"; fontFamily = "Passion One"; textSize = 6; retData = FALSE; seeds = mySeeds; submission = nnetSubmissionAwin; teams = myTeams; textSize = 4; retData = TRUE; logo = myLogo; regions = setNames(c("South", "East", "Midwest", "West"), c("X", "W", "Y", "Z"))
 
 # Inputs for drawing bracket
 seedsPath <- paste0(stageDir, ifelse(womens, "W", "M"), "NCAATourneySeeds.csv")
@@ -583,11 +655,11 @@ nnetSubmissionMOV <- readr::read_csv(paste0("Preds/", "MOV", "/preds_nnet_",
                                          ifelse(womens, "W", "M"), "_", "MOV", "_only.csv"))
 
 bracketResAwin <- bracketDraw(submission = nnetSubmissionAwin, 
-            seeds = mySeeds, teams = myTeams, textSize = 4,
+            seeds = mySeeds, teams = myTeams, textSize = 3,
             retData = TRUE)
 
 bracketResMOV <- bracketDraw(submission = nnetSubmissionMOV, 
-            seeds = mySeeds, teams = myTeams,
+            seeds = mySeeds, teams = myTeams, textSize = 3,
             retData = TRUE)
 ```
 
@@ -596,14 +668,17 @@ Row {.tabset .tabset-fade data-height=700}
 
 ### Bracket: Binary Outcome Model
 
-```{r, fig.width = 14, fig.height= 7}
-plotly::ggplotly(bracketResAwin$bracketGG, tooltip = "text")
+```{r, fig.width = 25, fig.height= 7}
+# bracketResAwin$bracketGG
+plotly::ggplotly(bracketResAwin$bracketGG, tooltip = "text") |> 
+  plotly::style(textposition = "right")
 ```
 
 ### Bracket: Margin of Victory Model
 
-```{r, fig.width = 14, fig.height= 7}
-bracketResMOV$bracketGG
+```{r, fig.width = 25, fig.height= 7}
+plotly::ggplotly(bracketResMOV$bracketGG, tooltip = "text") |> 
+  plotly::style(textposition = "right")
 ```
 
 
@@ -636,9 +711,9 @@ rankFun <- function(myData, gradColors = c("#ffa241", "white", "#065cb5")) {
   dplyr::mutate(Team = Underdog, 
                 Prob = 1 - `Favorite Win Probability`) %>% 
   dplyr::select(Team, Prob)) %>% 
-  group_by(Team) %>% 
+  dplyr::group_by(Team) %>% 
   dplyr::summarize(Rating = sum(Prob)) %>% 
-  ungroup() %>% 
+  dplyr::ungroup() %>% 
   dplyr::mutate(Rank = rank(-Rating), 
                 Rating = as.numeric(scale(Rating, center = TRUE, scale = TRUE))) %>% 
   dplyr::arrange(Rank) %>% 
