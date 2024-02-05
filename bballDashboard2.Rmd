@@ -230,9 +230,9 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   
   # Data for drawing bracket
   bracketData <- preds %>% 
-    left_join(seeds, by = c("Team1" = "TeamID")) %>% 
+    right_join(seeds, by = c("Team1" = "TeamID")) %>% 
     dplyr::rename(Seed1 = Seed, Pred1 = Pred) %>% 
-    left_join(seeds, by = c("Team2" = "TeamID", "Season" = "Season")) %>% 
+    right_join(seeds, by = c("Team2" = "TeamID", "Season" = "Season")) %>% 
     dplyr::rename(Seed2 = Seed) %>% 
     mutate(Pred2 = 1 - Pred1) %>% 
     dplyr::select(Season, Team1:Pred1, Pred2, Seed1, Seed2) %>% 
@@ -317,112 +317,162 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   roundsWide <- bind_rows(firstFour, round1, round2, round3, 
                           round4, round5, round6) %>% 
     left_join(bracketDataFull %>% 
-                dplyr::select(-Season, -Team1, -Team2))
+                dplyr::select(-Season, -Team1, -Team2),
+              relationship = "many-to-many")
   
-  roundsLong <- roundsWide %>% pivot_longer(cols = c(Seed1, Seed2), 
-                                            names_to = "Team", values_to = "Seed") %>% 
-    dplyr::mutate(Region1 = fct_relevel(Region1, regions[4], regions[2], regions[1], regions[3]),
-                  Region2 = fct_relevel(Region2, regions[4], regions[2], regions[1], regions[3])) %>% 
+  roundsLong <- roundsWide %>% 
+    pivot_longer(cols = c(Seed1, Seed2), 
+                 names_to = "Team", values_to = "Seed") %>% 
+    dplyr::mutate(Region1 = fct_relevel(Region1, regions[4], regions[2], 
+                                                 regions[1], regions[3]),
+                  Region2 = fct_relevel(Region2, regions[4], regions[2], 
+                                                 regions[1], regions[3])) %>% 
     arrange(Round, Region1, Matchup, Team, Seed) %>% 
     dplyr::mutate(Pred1 = sprintf('%.3f',Pred1), Pred2 = sprintf('%.3f',Pred2),
-                  Winner = ifelse(Pred1 > Pred2, TeamName1, TeamName2), TeamName = case_when(
-                    Team == "Seed1" & PlayIn ~ paste0(paste0("(", Pred1, ") ", TeamName1, " ", Seed),
+                  Winner = ifelse(Pred1 > Pred2, TeamName1, TeamName2), 
+                  TeamName = case_when(
+                  Team == "Seed1" & PlayIn ~ paste0(paste0("(", Pred1, ") ", TeamName1, " ", Seed),
                                                       " vs. ", paste0(Seed, " ", TeamName2, " (", Pred2, ")")),
-                    Team == "Seed2" & PlayIn ~ paste0(paste0("(", Pred2, ") ", TeamName2, " ", Seed),
+                  Team == "Seed2" & PlayIn ~ paste0(paste0("(", Pred2, ") ", TeamName2, " ", Seed),
                                                       " vs. ", paste0(Seed, " ", TeamName1, " (", Pred1, ")")),
-                    Team == "Seed1" & Region1 %in% c(regions[4], regions[2]) ~ paste0(Seed, " ", TeamName1, " (", Pred1, ")"),
-                    Team == "Seed2" & Region2 %in% c(regions[4], regions[2]) ~ paste0(Seed, " ", TeamName2, " (", Pred2, ")"),
-                    Team == "Seed1" & Region1 %in% c(regions[1], regions[3]) ~ paste0("(", Pred1, ") ", TeamName1, " ", Seed),
-                    Team == "Seed2" & Region2 %in% c(regions[1], regions[3]) ~ paste0("(", Pred2, ") ", TeamName2, " ", Seed)))
+                  Team == "Seed1" & Region1 %in% c(regions[4], regions[2]) ~ paste0(Seed, " ", TeamName1, " (", Pred1, ")"),
+                  Team == "Seed2" & Region2 %in% c(regions[4], regions[2]) ~ paste0(Seed, " ", TeamName2, " (", Pred2, ")"),
+                  Team == "Seed1" & Region1 %in% c(regions[1], regions[3]) ~ paste0("(", Pred1, ") ", TeamName1, " ", Seed),
+                  Team == "Seed2" & Region2 %in% c(regions[1], regions[3]) ~ paste0("(", Pred2, ") ", TeamName2, " ", Seed)))
   
   # Printing first four play-in games
-  r0Labs <- roundsLong %>% filter(Round == 0) %>% arrange(Matchup) %>% 
-    group_by(Matchup) %>% slice(1) %>% ungroup() %>% 
-    mutate(Xstart = c(r4.x[1], r4.x[1],
-                      -(2*r4.x[2]-r4.x[1]), -(2*r4.x[2]-r4.x[1])),
-           Y = c(r1.y[16], -r1.y[16], r1.y[16], -r1.y[16]))
+  r0Labs <- roundsLong %>% 
+    dplyr::filter(Round == 0) %>% 
+    dplyr::arrange(Matchup) %>% 
+    group_by(Matchup) %>% 
+    dplyr::slice(1) %>% 
+    ungroup() %>% 
+    dplyr::mutate(Xstart = c(r4.x[1], r4.x[1], 
+                      -(2*r4.x[2]-r4.x[1]), 
+                      -(2*r4.x[2]-r4.x[1])),
+                  Y = c(r1.y[16], -r1.y[16], 
+                        r1.y[16], -r1.y[16]))
   
   # Winners from first four play-in games
-  r0Winners <- roundsLong %>% filter(Round == 0) %>% arrange(Matchup) %>% 
-    group_by(Matchup) %>% slice(1) %>% ungroup() %>% pull(Winner) %>% unique()
+  r0Winners <- roundsLong %>% 
+    dplyr::filter(Round == 0) %>% 
+    dplyr::arrange(Matchup) %>% 
+    group_by(Matchup) %>% 
+    dplyr::slice(1) %>% 
+    ungroup() %>% 
+    pull(Winner) %>% 
+    unique()
   
-  playins <- roundsLong %>% filter(Round == 0) %>% arrange(Matchup) %>% 
-    group_by(Matchup) %>% slice(1) %>% ungroup() %>% select(TeamName1:TeamName2) %>% 
+  playins <- roundsLong %>% 
+    dplyr::filter(Round == 0) %>% 
+    dplyr::arrange(Matchup) %>% 
+    group_by(Matchup) %>% 
+    dplyr::slice(1) %>% 
+    ungroup() %>% 
+    dplyr::select(TeamName1:TeamName2) %>% 
     unlist()
   
   r0Losers <- playins[which(!(playins %in% r0Winners))]
   
   # Printing round 1 teams
-  r1Labs <- roundsLong %>% filter(Round == 1, !(TeamName1 %in% r0Losers), 
-                                  !(TeamName2 %in% r0Losers)) %>% 
-    mutate(Xstart = c(rep(r1.x[1], 16), rep(r1.x[1], 16),
+  r1Labs <- roundsLong %>% 
+    dplyr::filter(Round == 1, !(TeamName1 %in% r0Losers), 
+                              !(TeamName2 %in% r0Losers)) %>% 
+    dplyr::mutate(Xstart = c(rep(r1.x[1], 16), rep(r1.x[1], 16),
                       rep(-r1.x[2], 16), rep(-r1.x[2], 16)),
-           Y = c(rep(c(rev(r1.y), r1.y), 2)*rep(c(1, -1), each = 16))+0.001)
+                  Y = c(rep(c(rev(r1.y), r1.y), 2)*rep(c(1, -1), each = 16))+0.001)
   
   # Winners from round 1
-  r1Winners <- roundsLong %>% dplyr::filter(Round == 1, !(TeamName1 %in% r0Losers), 
-                                            !(TeamName2 %in% r0Losers)) %>% pull(Winner) %>% unique()
+  r1Winners <- roundsLong %>% 
+    dplyr::filter(Round == 1, !(TeamName1 %in% r0Losers), 
+                              !(TeamName2 %in% r0Losers)) %>% 
+    pull(Winner) %>% 
+    unique()
   
   # Printing round 2 teams
-  r2Labs <- roundsLong %>% dplyr::filter(Round == 2, TeamName1 %in% r1Winners, 
-                                         TeamName2 %in% r1Winners) %>% distinct() %>% 
+  r2Labs <- roundsLong %>% 
+    dplyr::filter(Round == 2, TeamName1 %in% r1Winners, 
+                              TeamName2 %in% r1Winners) %>% 
+    dplyr::distinct() %>% 
     dplyr::mutate(Xstart = c(rep(r2.x[1], 8), rep(r2.x[1], 8),
                              rep(-r2.x[2], 8), rep(-r2.x[2], 8)),
                   Y = c(rev(r2.y), -r2.y, rev(r2.y), -r2.y))
   
   # Winners from round 2
-  r2Winners <- roundsLong %>% dplyr::filter(Round == 2, TeamName1 %in% r1Winners, 
-                                            TeamName2 %in% r1Winners) %>% distinct() %>%
-    dplyr::pull(Winner) %>% unique()
+  r2Winners <- roundsLong %>% 
+    dplyr::filter(Round == 2, TeamName1 %in% r1Winners, 
+                              TeamName2 %in% r1Winners) %>% 
+    dplyr::distinct() %>%
+    dplyr::pull(Winner) %>% 
+    unique()
   
   # Printing round 3 teams
-  r3Labs <- roundsLong %>% dplyr::filter(Round == 3, TeamName1 %in% r2Winners, 
-                                         TeamName2 %in% r2Winners) %>% distinct() %>% 
+  r3Labs <- roundsLong %>% 
+    dplyr::filter(Round == 3, TeamName1 %in% r2Winners, 
+                              TeamName2 %in% r2Winners) %>% distinct() %>% 
     dplyr::mutate(Xstart = c(rep(r3.x[1], 4), rep(r3.x[1], 4),
                              rep(-r3.x[2], 4), rep(-r3.x[2], 4)),
                   Y = c(rev(r3.y), -r3.y, rev(r3.y), -r3.y))
   
   # Winners from round 3
-  r3Winners <- roundsLong %>% dplyr::filter(Round == 3, TeamName1 %in% r2Winners, 
-                                            TeamName2 %in% r2Winners) %>% distinct() %>%
-    dplyr::pull(Winner) %>% unique()
+  r3Winners <- roundsLong %>% 
+    dplyr::filter(Round == 3, TeamName1 %in% r2Winners, 
+                              TeamName2 %in% r2Winners) %>% 
+    dplyr::distinct() %>%
+    dplyr::pull(Winner) %>% 
+    unique()
   
   # Printing round 4 teams
-  r4Labs <- roundsLong %>% filter(Round == 4, TeamName1 %in% r3Winners, 
-                                  TeamName2 %in% r3Winners) %>% distinct() %>% 
+  r4Labs <- roundsLong %>% 
+    dplyr::filter(Round == 4, TeamName1 %in% r3Winners, 
+                              TeamName2 %in% r3Winners) %>% 
+    dplyr::distinct() %>% 
     dplyr::mutate(Xstart = c(rep(r4.x[1], 2), rep(r4.x[1], 2),
                              rep(-r4.x[2], 2), rep(-r4.x[2], 2)),
                   Y = c(rev(r4.y), -r4.y, rev(r4.y), -r4.y))
   
   # Winners from round 4
-  r4Winners <- roundsLong %>% filter(Round == 4, TeamName1 %in% r3Winners, 
-                                     TeamName2 %in% r3Winners) %>% distinct() %>%
-    pull(Winner) %>% unique()
+  r4Winners <- roundsLong %>% 
+    dplyr::filter(Round == 4, TeamName1 %in% r3Winners, 
+                              TeamName2 %in% r3Winners) %>% 
+    dplyr::distinct() %>%
+    pull(Winner) %>% 
+    unique()
   
   # Printing round 5 teams
-  r5Labs <- roundsLong %>% filter(Round == 5, TeamName1 %in% r4Winners, 
-                                  TeamName2 %in% r4Winners) %>% distinct() %>% 
+  r5Labs <- roundsLong %>% 
+    dplyr::filter(Round == 5, TeamName1 %in% r4Winners, 
+                              TeamName2 %in% r4Winners) %>% 
+    dplyr::distinct() %>% 
     mutate(Xstart = c(rep(r5.x[1], 1), rep(r5.x[1], 1),
                       rep(-r5.x[2], 1), rep(-r5.x[2], 1)),
            Y = c(rev(r5.y), -r5.y, rev(r5.y), -r5.y))
   
   # Winners from round 5
-  r5Winners <- roundsLong %>% filter(Round == 5, TeamName1 %in% r4Winners, 
-                                     TeamName2 %in% r4Winners) %>% distinct() %>%
-    pull(Winner) %>% unique()
+  r5Winners <- roundsLong %>% 
+    dplyr::filter(Round == 5, TeamName1 %in% r4Winners, 
+                              TeamName2 %in% r4Winners) %>% 
+    dplyr::distinct() %>%
+    pull(Winner) %>% 
+    unique()
   
   # Printing round 6 teams
-  r6Labs <- roundsLong %>% filter(Round == 6, TeamName1 %in% r5Winners, 
-                                  TeamName2 %in% r5Winners) %>% distinct() %>% 
+  r6Labs <- roundsLong %>% 
+    dplyr::filter(Round == 6, TeamName1 %in% r5Winners, 
+                              TeamName2 %in% r5Winners) %>% 
+    dplyr::distinct() %>% 
     mutate(Xstart = c(rep(r6.x[1], 1), rep(-r6.x[2], 1)),
            Y = c(r6.y, -r6.y))
   
   # Winners from round 6 (grand overall winner)
-  r6Winner <- roundsLong %>% filter(Round == 6, TeamName1 %in% r5Winners, 
-                                    TeamName2 %in% r5Winners) %>% distinct() %>%
-    pull(Winner) %>% unique()
+  r6Winner <- roundsLong %>% 
+    dplyr::filter(Round == 6, TeamName1 %in% r5Winners, 
+                              TeamName2 %in% r5Winners) %>% 
+    dplyr::distinct() %>%
+    pull(Winner) %>% 
+    unique()
   
-  r7Labs <- dplyr::slice(r6Labs, n = 1) %>% 
+  r7Labs <- dplyr::slice_head(r6Labs, n = 1) %>% 
     dplyr::mutate(Region1 = "Championship", Region2 = "Championship", Round = 7,
                   Xstart = 0 - nchar(r6Winner) / 10, Y = 0, TeamName = r6Winner)
   
@@ -432,9 +482,9 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
                        r4Labs, r5Labs, r6Labs, r7Labs)
   
   bracketGG <- empty.bracket +
-    geom_text(data=labData,aes(x=Xstart,y=Y,
-                               label=TeamName, text = TeamName),
-              size=rel(textSize),hjust=0,vjust=0,
+    geom_text(data = labData, aes(x = Xstart, y = Y,
+                               label = TeamName, text = TeamName),
+              size = rel(textSize), hjust = 0, vjust = 0,
               family = fontFamily) +
     theme(text = element_text(family = fontFamily,
                               size = rel(textSize)))
