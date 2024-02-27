@@ -53,7 +53,7 @@ font_add_google(name = str_to_title(fontFamily),
                 family = fontFamily)
 ```
 
-```{r, include = FALSE, eval = TRUE}
+```{r, include = FALSE, eval = TRUE, warning = FALSE}
 library(showtext)
 library(tidyverse)
 library(png)
@@ -231,8 +231,7 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   # Coordinates for drawing team names & probabilities
     name_coords <- fullCoords |> 
     dplyr::filter(x != xend) |> 
-    dplyr::mutate(Xstart = case_when(Region %in% regions[3:4] ~ xend,
-                                     TRUE ~ x), 
+    dplyr::mutate(Xstart = x, 
                   Y = y) |> 
     dplyr::select(Round, Region, Xstart, Y) |> 
       dplyr::group_by(Round, Region) |> 
@@ -542,18 +541,52 @@ bracketDraw <- function(submission, seeds, teams, logo = NULL, lineColor = "blac
   
   # Adding team and regions names to bracket, 
   # and adding small space for text above lines
-  bracketGG <- empty.bracket +
-    labData |> 
-    dplyr::mutate(Y = Y + 0.005) |> 
-    geom_text(mapping = aes(x = Xstart, y = Y,
+  v_adjust <- 0.005
+  bracketGG <- empty.bracket + # Adding regions 1 and 2 games
+    geom_text(data = dplyr::filter(dplyr::mutate(labData, Y = Y + v_adjust),
+                                   Region1 %in% regions[c(1:2)],
+                                   Round < 6, Round > 0),
+              mapping = aes(x = Xstart, y = Y,
                                label = TeamName, text = TeamName),
               size = rel(textSize), hjust = 0, vjust = 0,
-              family = fontFamily) +
-    geom_text(data = tibble(Region = regions,
-                                  Xstart = c(rep(unique(r4Labs$Xstart)[1], 2),
-                                             rep(unique(r3Labs$Xstart)[2], 2)),
-                                  Y = rep(c(mean(unique(r4Labs$Y)[3:4]), 
-                                            mean(unique(r4Labs$Y)[1:2])), times = 2)),
+              family = fontFamily) + # Adding regions 3 and 4 games
+        geom_text(data = dplyr::filter(dplyr::mutate(labData, Y = Y + v_adjust),
+                                   Region1 %in% regions[c(3:4)],
+                                   Round < 6, Round > 0),
+              mapping = aes(x = Xstart, y = Y,
+                               label = TeamName, text = TeamName),
+              size = rel(textSize), hjust = 1, vjust = 0,
+              family = fontFamily) + # Adding play-in games
+            geom_text(data = dplyr::filter(dplyr::mutate(labData, Y = Y + v_adjust),
+                                           Round == 0),
+              mapping = aes(x = Xstart, y = Y,
+                               label = TeamName, text = TeamName),
+              size = rel(textSize), hjust = 0, vjust = 0,
+              family = fontFamily) + # Adding championship game
+                geom_text(data = dplyr::filter(dplyr::mutate(labData, Y = Y + v_adjust),
+                                           Round == 6, Region1 %in% regions[1:2]),
+              mapping = aes(x = Xstart, y = Y,
+                               label = TeamName, text = TeamName),
+              size = rel(textSize), hjust = 0, vjust = 0,
+              family = fontFamily) + # Adding champion
+                    geom_text(data = dplyr::filter(dplyr::mutate(labData, Y = Y + v_adjust),
+                                           Round == 7),
+              mapping = aes(x = 0, y = 0 + v_adjust,
+                               label = TeamName, text = TeamName),
+              size = rel(textSize), hjust = 0.5, vjust = 0,
+              family = fontFamily) + # Add region labels for regions 1 & 2
+    geom_text(data = tibble(Region = regions[1:2],
+                                  Xstart = rep(unique(r4Labs$Xstart)[1], 2),
+                                  Y = c(mean(unique(r4Labs$Y)[3:4]), 
+                                        mean(unique(r4Labs$Y)[1:2]))),
+                    aes(x = Xstart, y = Y,
+                        label = Region, text = Region), nudge_y = 0, 
+                    color = "#065cb5",
+                    size = rel(textSize*1.5)) + # Add region labels for regions 3 & 4
+        geom_text(data = tibble(Region = regions[3:4],
+                                  Xstart = rep(unique(r4Labs$Xstart)[2], 2),
+                                  Y = c(mean(unique(r4Labs$Y)[3:4]), 
+                                        mean(unique(r4Labs$Y)[1:2]))),
                     aes(x = Xstart, y = Y,
                         label = Region, text = Region), nudge_y = 0, 
                     color = "#065cb5",
@@ -634,6 +667,8 @@ defaultPageSize = 40) %>%
 
 # lineColor = "black"; fontFamily = "Passion One"; textSize = 6; retData = FALSE; seeds = mySeeds; submission = nnetSubmissionAwin; teams = myTeams; textSize = 4; retData = TRUE; logo = myLogo; regions = setNames(c("South", "East", "Midwest", "West"), c("X", "W", "Y", "Z"))
 
+# Function for simulating NCAA Tournament
+
 # Inputs for drawing bracket
 seedsPath <- paste0(stageDir, ifelse(womens, "W", "M"), "NCAATourneySeeds.csv")
 mySeeds <- read_csv(paste0(seedsPath)) %>% 
@@ -663,24 +698,310 @@ bracketResMOV <- bracketDraw(submission = nnetSubmissionMOV,
             retData = TRUE)
 ```
 
+```{r}
+# Function for making data set on all possible matchups
+make_matchups_data <- function(submission, seeds, teams, 
+                        regions = setNames(c("SOUTH", "EAST", "MIDWEST", "WEST"),
+                        c("X", "W", "Y", "Z"))) {
+  
+    region_names <- names(regions)
+  
+  # Cleaning up predictions
+  preds <- submission %>% 
+    mutate(Team1 = as.integer(map_chr(str_split(ID, pattern = "_"), 2)), 
+           Team2 = as.integer(map_chr(str_split(ID, pattern = "_"), 3))) %>% 
+    dplyr::select(Team1, Team2, Pred)
+  
+  # Data for drawing bracket
+  bracketData <- preds %>% 
+    right_join(seeds, by = c("Team1" = "TeamID")) %>% 
+    dplyr::rename(Seed1 = Seed, Pred1 = Pred) %>% 
+    right_join(seeds, by = c("Team2" = "TeamID", "Season" = "Season")) %>% 
+    dplyr::rename(Seed2 = Seed) %>% 
+    mutate(Pred2 = 1 - Pred1) %>% 
+    dplyr::select(Season, Team1:Pred1, Pred2, Seed1, Seed2) %>% 
+    mutate(Region1 = str_sub(Seed1, start = 1, end = 1),
+           Region2 = str_sub(Seed2, start = 1, end = 1),
+           PlayIn = case_when(str_detect(Seed1, pattern = "a|b") &
+                                str_detect(Seed2, pattern = "a|b") &
+                                Region1 == Region2 & 
+                                str_remove(Seed1, pattern = "a|b") == str_remove(Seed2, pattern = "a|b")~ TRUE,
+                              TRUE ~ FALSE),
+           Seed1 = as.integer(str_sub(str_remove(Seed1, pattern = "a|b"), start = 2, end = -1)),
+           Seed2 = as.integer(str_sub(str_remove(Seed2, pattern = "a|b"), start = 2, end = -1))) %>% 
+    mutate(Region1 = case_when(Region1 == region_names[2] ~ regions[2],
+                               Region1 == region_names[1] ~ regions[1],
+                               Region1 == region_names[3] ~ regions[3],
+                               Region1 == region_names[4] ~ regions[4]),
+           Region2 = case_when(Region2 == region_names[2] ~ regions[2],
+                               Region2 == region_names[1] ~ regions[1],
+                               Region2 == region_names[3] ~ regions[3],
+                               Region2 == region_names[4] ~ regions[4])) %>% 
+    left_join(teams, by = c("Team1" = "TeamID")) %>% 
+    left_join(teams, by = c("Team2" = "TeamID"), suffix = c("1", "2"))
+  
+  bracketDataFull <- bracketData %>% 
+    bind_rows(bracketData %>% 
+                rename_with(~ gsub("1", "A", .x, fixed = TRUE), ends_with("1")) %>% 
+                rename_with(~ gsub("2", "B", .x, fixed = TRUE), ends_with("2")) %>% 
+                rename_with(~ gsub("A", "2", .x, fixed = TRUE), ends_with("A")) %>% 
+                rename_with(~ gsub("B", "1", .x, fixed = TRUE), ends_with("B")) %>% 
+                dplyr::select(colnames(bracketData)))
+  
+  # First four play-in games
+  firstFour <- bracketDataFull %>% 
+    dplyr::filter(PlayIn) %>% 
+    dplyr::mutate(Round = 0, 
+                  Matchup = as.integer(factor(paste0(ifelse(Team1 < Team2, paste0(Team1, "_", Team2), 
+                                                                       paste0(Team2, "_", Team1)))))) %>% 
+    dplyr::select(Seed1, Seed2, Region1, Region2, Round, Matchup)
+  
+  # Possible matchups
+  round1 <- data.frame(Seed1 = 1:8, Seed2 = 16:9, 
+                       Region1 = rep(c(regions[2], regions[4], regions[3], regions[1]), each = 8)) %>% 
+    dplyr::mutate(Region2 = Region1, Round = 1,
+                  Matchup = case_when(Seed1 == 1 ~ 1,
+                                      Seed1 == 8 ~ 2,
+                                      Seed1 == 5 ~ 3,
+                                      Seed1 == 4 ~ 4,
+                                      Seed1 == 6 ~ 5,
+                                      Seed1 == 3 ~ 6,
+                                      Seed1 == 7 ~ 7,
+                                      Seed1 == 2 ~ 8))
+  
+  round2 <- map_dfr(.x = rep(list(list(c(1, 16), c(8, 9)), list(c(5, 12), c(4, 13)), 
+                                  list(c(6, 11), c(3, 14)), list(c(7, 10), c(2, 15))), 4), 
+                    .f = function(x) {expand_grid(Seed1 = x[[1]], Seed2 = x[[2]])}) %>%  
+    mutate(Region1 = rep(c(regions[2], regions[4], regions[3], regions[1]), each = 16)) %>% 
+    mutate(Region2 = Region1, Round = 2,
+           Matchup = case_when(Seed1 %in% c(1, 16) ~ 1,
+                               Seed1 %in% c(5, 12) ~ 2,
+                               Seed1 %in% c(6, 11) ~ 3,
+                               Seed1 %in% c(7, 10) ~ 4))
+  
+  round3 <- expand_grid(Seed1 = c(1, 16, 8, 9), Seed2 = c(5, 12, 4, 13), 
+                        Region1 = c(regions[2], regions[4], regions[3], regions[1])) %>%
+    bind_rows(expand_grid(Seed1 = c(6, 11, 3, 14), Seed2 = c(7, 10, 2, 15), 
+                          Region1 = c(regions[2], regions[4], regions[3], regions[1]))) %>% 
+    dplyr::mutate(Region2 = Region1, Round = 3, Matchup = rep(1:2, each = 64))
+  
+  round4 <- expand_grid(Seed1 = c(1, 16, 8, 9, 5, 12, 4, 13), 
+                        Seed2 = c(6, 11, 3, 14, 7, 10, 2, 15), 
+                        Region1 = c(regions[2], regions[4], regions[3], regions[1])) %>% 
+    dplyr::mutate(Region2 = Region1, Round = 4, Matchup = 1)
+  
+  round5 <- expand_grid(Seed1 = 1:16, Seed2 = 1:16, 
+                        Region1 = c(regions[1], regions[3])) %>% 
+    dplyr::mutate(Region2 = ifelse(Region1 == regions[1], regions[2], regions[4]), Round = 5, 
+                  Matchup = 1)
+  
+  round6 <- expand_grid(Seed1 = 1:16, Seed2 = 1:16, 
+                        Region1 = c(regions[1], regions[2]),
+                        Region2 = c(regions[3], regions[4])) %>% 
+    dplyr::mutate(Round = 6, Matchup = 1)
+  
+  roundsWide <- bind_rows(firstFour, round1, round2, round3, 
+                          round4, round5, round6) %>% 
+    left_join(bracketDataFull %>% 
+                dplyr::select(-Season, -Team1, -Team2),
+              relationship = "many-to-many")
+  
+  roundsLong <- roundsWide %>% 
+    pivot_longer(cols = c(Seed1, Seed2), 
+                 names_to = "Team", values_to = "Seed") %>% 
+    arrange(Round, Region1, Matchup, Team, Seed) |> 
+    dplyr::select(-Team, -Pred2)
+  
+  return(roundsLong)
+}
+
+# Function for walking through tournament given winners
+walk_tournament <- function(rounds_data) {
+  
+  # Winners from first four play-in games
+  r0Winners <- pull(dplyr::ungroup(dplyr::slice(dplyr::group_by(dplyr::filter(rounds_data, Round == 0), Matchup), 1)), Winner)
+  
+  playins <- unlist(dplyr::select(dplyr::ungroup(dplyr::slice(dplyr::group_by(dplyr::filter(rounds_data, Round == 0), Matchup), 1)), TeamName1:TeamName2))
+  
+  r0Losers <- playins[which(!(playins %in% r0Winners))]
+  
+  # Winners from round 1: Round of 32
+  r1Res <- dplyr::filter(rounds_data, Round == 1, !(TeamName1 %in% r0Losers), 
+                              !(TeamName2 %in% r0Losers))
+  r1Winners <- r1Res$Winner
+  r1Losers <- r1Res$Loser
+  
+  # Winners from round 2: Sweet Sixteen
+  r2Winners <- dplyr::filter(rounds_data, Round == 2, TeamName1 %in% r1Winners, 
+                              TeamName2 %in% r1Winners)$Winner
+  
+  # Winners from round 3: Elite Eight
+  r3Winners <- dplyr::filter(rounds_data, Round == 3, TeamName1 %in% r2Winners, 
+                              TeamName2 %in% r2Winners)$Winner
+  
+  # Winners from round 4: Final Four
+  r4Winners <- dplyr::filter(rounds_data, Round == 4, TeamName1 %in% r3Winners, 
+                              TeamName2 %in% r3Winners)$Winner
+  
+  # Winners from round 5: Championship
+  r5Winners <- dplyr::filter(rounds_data, Round == 5, TeamName1 %in% r4Winners, 
+                              TeamName2 %in% r4Winners)$Winner
+  
+  # Winners from round 6: Grand overall winner
+  r6Winners <- dplyr::filter(rounds_data, Round == 6, TeamName1 %in% r5Winners, 
+                              TeamName2 %in% r5Winners)$Winner
+  
+  return(c(r1Losers, r1Winners,
+           r1Winners, 
+           r2Winners,
+           r3Winners, 
+           r4Winners,
+           r5Winners,
+           r6Winners))
+}
+```
+
+```{r}
+library(tidyverse)
+library(furrr)
+
+womens <- FALSE
+tourneyYear <- 2023
+
+# Setting working directory
+setwd(paste0("H:/My Drive/dilerand@mail.gvsu.edu 2022-11-21 21 19/Other/Fun/March Madness/", tourneyYear))
+
+# Setting file paths
+stageDir <- paste0("march-machine-learning-mania-", tourneyYear, "/")
+
+# Inputs for drawing bracket
+seedsPath <- paste0(stageDir, ifelse(womens, "W", "M"), "NCAATourneySeeds.csv")
+mySeeds <- read_csv(paste0(seedsPath)) %>% 
+  filter(Season == tourneyYear)
+
+# Drawing bracket
+nnetSubmissionAwin <- readr::read_csv(paste0("Preds/", "Awin", "/preds_nnet_", 
+                                         ifelse(womens, "W", "M"), "_", "Awin", "_only.csv"))
+
+teamsPath <- paste0(stageDir, ifelse(womens, "W", "M"), "Teams.csv")
+
+myTeams <- read_csv(teamsPath) %>% 
+  select(TeamID:TeamName)
+
+# Prediction data on matchups
+long_rounds <- make_matchups_data(seeds = mySeeds,
+                                         submission = nnetSubmissionAwin,
+                                         teams = myTeams,
+                                         regions = setNames(c("South", "East", "Midwest", "West"), 
+                                                            c("X", "W", "Y", "Z"))) |> 
+  distinct() |> 
+  mutate(game_id = as.integer(as.factor(ifelse(TeamName1 < TeamName2, 
+                          str_c(TeamName1, "_", TeamName2),
+                          str_c(TeamName2, "_", TeamName1))))) |> 
+  group_by(game_id) |> 
+  slice_head(n = 1) |> 
+  ungroup() |> 
+  dplyr::select(-game_id)
+
+# Rounds to matchup with teams for each simulation from walk_tournament()
+rounds <- rep(c("First Round", "Round of 32", "Sweet 16", "Elite 8", 
+                "Final 4", "Final", "Champion"), 
+              times = c(64, 32, 16, 8, 4, 2, 1))
+
+# Generating values from uniform(0, 1) to help simulate game outcomes
+winners_data <- dplyr::mutate(long_rounds, 
+                              Winner = ifelse(Pred1 > 0.5, TeamName1, TeamName2),
+                              Loser = ifelse(Pred1 <= 0.5, TeamName1, TeamName2))
+
+# Deterministic walk through tournament
+tourney_results <- walk_tournament(rounds_data = winners_data)
+
+# Generating values from uniform distribution for simulations
+n_games <- nrow(long_rounds)
+n_sims <- 10000
+uniform_vals <- matrix(runif(n = n_games*n_sims, min = 0, max = 1),
+                       ncol = n_sims)
+
+# Set a "plan" for how the code should run.
+plan(multisession, workers = 4)
+
+# Simulating walks through tournament
+sim_results <- tibble(Team = unlist(furrr::future_map(.x = 1:n_sims,
+        .f = function(sim_num) {
+          walk_tournament(rounds_data = dplyr::mutate(long_rounds,
+                                            Winner = ifelse(Pred1 > uniform_vals[, sim_num], TeamName1, TeamName2),
+                                            Loser = ifelse(Pred1 <= uniform_vals[, sim_num], TeamName1, TeamName2)))
+        })), Round = rep(rounds, times = n_sims))
+        
+
+# Function for labelling percents
+percent_labeller <- scales::label_percent(accuracy = 0.01, scale = 100)
+
+# Summarizing simulations with probability of reaching each round
+sim_summary <- sim_results |> 
+  janitor::tabyl(Team, Round, show_missing_levels = TRUE) |> 
+  dplyr::select(c("Team", "First Round", "Round of 32", "Sweet 16", "Elite 8", 
+                "Final 4", "Final", "Champion")) |> 
+  mutate(across(where(is.double), ~ .x / n_sims))
+
+# Most like sets of teams in rounds
+rounds_summary <- sim_results |> 
+  mutate(sim = rep(1:n_sims, each = length(rounds))) |> 
+  group_by(sim, Round) |> 
+  summarize(Teams = paste(sort(Team), collapse = ", ")) |> 
+  ungroup() |> 
+  count(Round, Teams) |> 
+  group_by(Round) |> 
+  slice_max(n, n = 3) |> 
+  dplyr::filter(n > 1)
+
+# Check duplicates rows in long_rounds: is this encoded correctly?
+
+### Ideas for improving speed of code
+### a) Encode team names (TeamName1 and TeamName2) as factors
+### b) Encode regions (Region1 and Region2) as factors
+### b) Drop the Pred1, PlayIn, and Seed variables
+```
+
 Row {.tabset .tabset-fade data-height=700}
 -----------------------------------------------------------------------
 
 ### Bracket: Binary Outcome Model
 
 ```{r, fig.width = 25, fig.height= 7}
-# bracketResAwin$bracketGG
+# Function to adjust alignment of text for different geom_text() layers
+text_adjust_plotly <- function(my_plotly, layers = 1, adjustment = "right") {
+  for(layer in layers) {
+    my_plotly[["x"]][["data"]][[layer]][["textposition"]] <- adjustment
+  }
+  
+  return(my_plotly)
+}
+
+### Layers 2 - 8
+## (2) regions 1 and 2 games
+## (3) regions 3 and 4 games
+## (4) play-in games
+## (5) championship game
+## (6) champion
+## (7) region labels for regions 1 & 2
+## (8) region labels for regions 3 & 4
 plotly::ggplotly(bracketResAwin$bracketGG, tooltip = "text") |> 
-  plotly::style(textposition = "right")
+  plotly::style(textposition = "right") |> 
+  text_adjust_plotly(layers = c(2, 4, 5, 7), adjustment = "right") |> 
+  text_adjust_plotly(layers = c(3, 8), adjustment = "left") |> 
+  text_adjust_plotly(layers = 6, adjustment = "center")
 ```
 
 ### Bracket: Margin of Victory Model
 
 ```{r, fig.width = 25, fig.height= 7}
 plotly::ggplotly(bracketResMOV$bracketGG, tooltip = "text") |> 
-  plotly::style(textposition = "right")
+  plotly::style(textposition = "right") |> 
+  text_adjust_plotly(layers = c(2, 4, 5, 7), adjustment = "right") |> 
+  text_adjust_plotly(layers = c(3, 8), adjustment = "left") |> 
+  text_adjust_plotly(layers = 6, adjustment = "center")
 ```
-
 
 Row {.tabset .tabset-fade data-height=300}
 -----------------------------------------------------------------------
