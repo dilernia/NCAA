@@ -867,21 +867,27 @@ library(furrr)
 
 womens <- FALSE
 tourneyYear <- 2023
+model <- "Awin"
 
 # Setting working directory
-setwd(paste0("H:/My Drive/dilerand@mail.gvsu.edu 2022-11-21 21 19/Other/Fun/March Madness/", tourneyYear))
+if(Sys.info()["sysname"] != "Darwin") {
+start_dir <- "H:/My Drive/dilerand@mail.gvsu.edu 2022-11-21 21 19/Other/Fun/March Madness/"
+} else {
+  start_dir <- "/Users/dilerand/Library/CloudStorage/GoogleDrive-asdilernia@gmail.com/My Drive/dilerand@mail.gvsu.edu 2022-11-21 21:19/Other/Fun/March Madness/"
+}
+setwd(paste0(start_dir, tourneyYear))
 
 # Setting file paths
 stageDir <- paste0("march-machine-learning-mania-", tourneyYear, "/")
 
-# Inputs for drawing bracket
+# Importing team seeds and regions data
 seedsPath <- paste0(stageDir, ifelse(womens, "W", "M"), "NCAATourneySeeds.csv")
 mySeeds <- read_csv(paste0(seedsPath)) %>% 
   filter(Season == tourneyYear)
 
-# Drawing bracket
-nnetSubmissionAwin <- readr::read_csv(paste0("Preds/", "Awin", "/preds_nnet_", 
-                                         ifelse(womens, "W", "M"), "_", "Awin", "_only.csv"))
+# Importing model predictions
+pred_submission <- readr::read_csv(paste0("Preds/", model, "/preds_nnet_", 
+                                         ifelse(womens, "W", "M"), "_", model, "_only.csv"))
 
 teamsPath <- paste0(stageDir, ifelse(womens, "W", "M"), "Teams.csv")
 
@@ -890,7 +896,7 @@ myTeams <- read_csv(teamsPath) %>%
 
 # Prediction data on matchups
 long_rounds <- make_matchups_data(seeds = mySeeds,
-                                         submission = nnetSubmissionAwin,
+                                         submission = pred_submission,
                                          teams = myTeams,
                                          regions = setNames(c("South", "East", "Midwest", "West"), 
                                                             c("X", "W", "Y", "Z"))) |> 
@@ -918,25 +924,38 @@ tourney_results <- walk_tournament(rounds_data = winners_data)
 
 # Generating values from uniform distribution for simulations
 n_games <- nrow(long_rounds)
-n_sims <- 10000
-uniform_vals <- matrix(runif(n = n_games*n_sims, min = 0, max = 1),
-                       ncol = n_sims)
+n_sims <- 1000000
+set.seed(1994)
 
+# Test code for timing things
+# timing_res <- bench::mark({coin_flips <- long_rounds$Pred1 > runif(n = n_games, min = 0, max = 1)
+#                           walk_tournament(rounds_data = dplyr::mutate(long_rounds,
+#                           Winner = ifelse(coin_flips, TeamName1, TeamName2),
+#                           Loser = ifelse(!coin_flips, TeamName1, TeamName2)))})
+
+
+if(file.exists(paste0("sim_results_", tourneyYear, "_", model, "_N", n_sims, ".rds")) == FALSE) {
 # Set a "plan" for how the code should run.
 plan(multisession, workers = 4)
+t1 <- Sys.time()
 
-# Simulating walks through tournament
+  # Simulating walks through tournament
 sim_results <- tibble(Team = unlist(furrr::future_map(.x = 1:n_sims,
         .f = function(sim_num) {
-          walk_tournament(rounds_data = dplyr::mutate(long_rounds,
-                                            Winner = ifelse(Pred1 > uniform_vals[, sim_num], TeamName1, TeamName2),
-                                            Loser = ifelse(Pred1 <= uniform_vals[, sim_num], TeamName1, TeamName2)))
-        })), Round = rep(rounds, times = n_sims))
-        
+          coin_flips <- long_rounds$Pred1 > runif(n = n_games, min = 0, max = 1)
+          return(walk_tournament(rounds_data = dplyr::mutate(long_rounds,
+                                            Winner = ifelse(coin_flips, TeamName1, TeamName2),
+                                            Loser = ifelse(!coin_flips, TeamName1, TeamName2))))
+        }, .progress = TRUE)), Round = rep(rounds, times = n_sims))
 
-# Function for labelling percents
-percent_labeller <- scales::label_percent(accuracy = 0.01, scale = 100)
+# Saving simulations results
+write_rds(sim_results, file = paste0("sim_results_", tourneyYear, "_", model, "_N", n_sims, ".rds"))
 
+} else {
+  if(file.exists(paste0("sim_summary_", tourneyYear, "_", model, "_N", n_sims, ".rds")) == FALSE) {
+  # Import simulation results from saved file
+  sim_results <- read_rds(paste0("sim_results_", tourneyYear, "_", model, "_N", n_sims, ".rds"))
+  
 # Summarizing simulations with probability of reaching each round
 sim_summary <- sim_results |> 
   janitor::tabyl(Team, Round, show_missing_levels = TRUE) |> 
@@ -952,8 +971,24 @@ rounds_summary <- sim_results |>
   ungroup() |> 
   count(Round, Teams) |> 
   group_by(Round) |> 
-  slice_max(n, n = 3) |> 
-  dplyr::filter(n > 1)
+  slice_max(n, n = 10) |> 
+  dplyr::filter(n > 1) |> 
+  mutate(prop = n / n_sims)
+
+# Saving simulation summary results
+write_rds(list(sim_summary = sim_summary,
+               rounds_summary = rounds_summary), 
+          file = paste0("sim_summary_", tourneyYear, "_", model, "_N", n_sims, ".rds"))
+} else {
+  sim_summary_list <- read_rds(paste0("sim_summary_", tourneyYear, "_", model, "_N", n_sims, ".rds"))
+  
+  # Create tibbles in environment from list
+list2env(sim_summary_list, envir = .GlobalEnv)
+}
+}
+
+# Function for labelling percents
+percent_labeller <- scales::label_percent(accuracy = 0.01, scale = 100)
 
 # Check duplicates rows in long_rounds: is this encoded correctly?
 
@@ -1019,11 +1054,11 @@ reactableFun(myData = bracketResAwin$ret %>% drop_na())
 reactableFun(myData = bracketResMOV$ret %>% drop_na())
 ```
 
-### Team Ratings: Binary Outcome Model
+### Team Ratings & Round Probabilities: Binary Outcome Model
 
 ```{r}
-# Function for creating table of team ranks
-rankFun <- function(myData, gradColors = c("#ffa241", "white", "#065cb5")) {
+# Function to calculate power rankings for teams
+power_rankings <- function(myData) {
   myData <- bind_rows(myData %>% 
   dplyr::mutate(Team = Favorite, 
                 Prob = `Favorite Win Probability`) %>% 
@@ -1038,7 +1073,14 @@ rankFun <- function(myData, gradColors = c("#ffa241", "white", "#065cb5")) {
   dplyr::mutate(Rank = rank(-Rating), 
                 Rating = as.numeric(scale(Rating, center = TRUE, scale = TRUE))) %>% 
   dplyr::arrange(Rank) %>% 
-  dplyr::select(Rank, Team, Rating) 
+  dplyr::select(Rank, Team, Rating)
+  
+  return(myData)
+}
+
+# Function for creating table of team power rankings
+rank_table <- function(myData, gradColors = c("#ffa241", "white", "#065cb5")) {
+  myData <- power_rankings(myData) 
   
   myData %>% 
   reactable(showSortIcon = FALSE,
@@ -1076,14 +1118,77 @@ defaultPageSize = 40) %>%
   add_title(title = "Team ratings are standardized win probabilities summed across all possible matchups of all NCAA teams.", font_size = 10) %>% 
   google_font(font_family = str_to_title(fontFamily))
 }
+
+# Function for making data for round / power rankings table
+round_power_data <- function(summary_data, bracket_data, region_data) {
+  # Adding seed and region information
+round_probs <- summary_data |> left_join(bind_rows(dplyr::rename(distinct(bracket_data, SeedFav, Favorite), "Team" = "Favorite", "Seed" = "SeedFav"),                                              dplyr::rename(distinct(bracket_data, SeedDog, Underdog), "Team" = "Underdog", "Seed" = "SeedDog")) |>
+  distinct() |> 
+  drop_na()) |> 
+  left_join(bind_rows(dplyr::rename(distinct(region_data, TeamName1, Region1), "Region" = "Region1", "Team" = "TeamName1"),                                              dplyr::rename(distinct(region_data, TeamName2, Region2), "Region" = "Region2", "Team" = "TeamName2")) |>
+    distinct() |> 
+    drop_na())
+
+# Adding in power rankings and displaying table
+round_power <- round_probs |> 
+  left_join(power_rankings(myData = bracket_data)) |> 
+  dplyr::select(Region, Seed, Rank, Team, Rating, everything())
+
+return(round_power)
+}
+
+# Function for creating reactable table
+# Following example at: https://kcuilla.github.io/reactablefmtr/articles/themes.html
+round_reactable_fun <- function(myData, gradColors = c("#ffa241", "white", "#065cb5")) {
+  myData %>% 
+  reactable(showSortIcon = FALSE,
+          searchable = TRUE,
+          defaultSorted = list(Rank = "asc"),
+          language = reactableLang(
+            searchPlaceholder = "Search in table...",
+            pageInfo = "{rowStart}\u2013{rowEnd} of {rows} teams",
+            noData = "That team does not exist."),
+            defaultColDef = colDef(
+    maxWidth = 100,
+    format = colFormat(percent = TRUE, digits = 2),
+    style = color_scales(myData, colors = rev(gradColors))
+),
+          columns = list(
+              Region = colDef(maxWidth = 100, rowHeader = TRUE, sticky = "left"),
+              Seed = colDef(
+              maxWidth = 60,
+              format = colFormat(digits = 0),
+                  style = color_scales(myData, colors = gradColors)
+            ),
+              Rank = colDef(
+                name = "Power Rank",
+              maxWidth = 85,
+              format = colFormat(digits = 0),
+                  style = color_scales(myData, colors = gradColors)
+            ),
+              Team = colDef(maxWidth = 150, rowHeader = TRUE, sticky = "left"),
+              Rating = colDef(
+                name = "Power Rating",
+              maxWidth = 100,
+              format = colFormat(digits = 2)
+            )
+          ),
+defaultPageSize = 40) %>% 
+  add_title(title = "Model data source: Kaggle", font_size = 10) %>% 
+  google_font(font_family = str_to_title(fontFamily))
+}
 ```
 
 ```{r}
-rankFun(myData = bracketResAwin$ret)
+# Displaying reactable table
+round_power_data(summary_data = sim_summary,
+                 bracket_data = bracketResAwin$ret,
+                 region_data = winners_data) |> 
+  round_reactable_fun()
 ```
 
 ### Team Ratings: Margin of Victory Model
 
 ```{r}
-rankFun(myData = bracketResMOV$ret)
+rank_table(myData = bracketResMOV$ret)
 ```
