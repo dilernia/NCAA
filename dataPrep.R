@@ -19,10 +19,11 @@ t1 <- Sys.time()
 
 # Script parameters: 
 # womens: whether to create modelling data for Men's (womens = FALSE) or Womens Tourney (womens = TRUE)
-# stage: first (stage = 1) or second stage (stage = 2) of Tourney competition
 # tourneyYear: year of tournament to forecast
+# finalFit: creating design matrix for final tournament predictions (TRUE) or not (FALSE)
 womens <- FALSE
 tourneyYear <- 2023
+finalFit <- FALSE
 
 # Setting file paths
 stageDir <- paste0(tourneyYear, "/march-machine-learning-mania-", tourneyYear, "/")
@@ -54,18 +55,20 @@ fullRaw <- bind_rows(regRaw, tourneyRaw) %>%
                              "WTeamID" = "TeamID")) %>% 
   left_join(confInfo, suffix = c("W", "L"),
             by = c("Season" = "Season", "LTeamID" = "TeamID")) %>% 
-  dplyr::rename(WConference = ConferenceW, LConference = ConferenceL) %>%
+  dplyr::rename(WConference = ConferenceW, 
+                LConference = ConferenceL) %>%
   dplyr::arrange(Season, DayNum, WTeamID) %>% 
   dplyr::mutate(WPoss = ((WFGA - WOR + WTO + (0.475 * WFTA)) + 
-                    (LFGA - LOR + LTO + (0.475 * LFTA))) / 2,
-         LPoss = WPoss, GameID = row_number(), 
+                         (LFGA - LOR + LTO + (0.475 * LFTA))) / 2,
+         LPoss = WPoss, 
+         GameID = row_number(), 
          Afix_mov = WScore - LScore,
          WScore_Eff = WScore / WPoss,
          LScore_Eff = LScore / LPoss,
          WMargin_Eff = Afix_mov / WPoss,
          LMargin_Eff = Afix_mov / LPoss,
-         WPyth = (WScore_Eff^11.5) / (WScore_Eff^11.5 + LScore_Eff^11.5),
-         LPyth = (LScore_Eff^11.5) / (WScore_Eff^11.5 + LScore_Eff^11.5),
+         WPyth = (WScore^11.5) / (WScore^11.5 + LScore^11.5),
+         LPyth = (LScore^11.5) / (WScore^11.5 + LScore^11.5),
          WeFG_perc = (WFGM + 0.5 * WFGM3) / WFGA,
          LeFG_perc = (LFGM + 0.5 * LFGM3) / LFGA,
          WAst_rate = WAst / WFGM,
@@ -107,6 +110,20 @@ fullRaw2 <- fullRaw %>%
                             fixed = TRUE), .cols = c(B_TeamID, B_Loc, B_Conference)) %>% 
   arrange(GameID)
 
+# Adding in games played for each team to facilitate decay in ELO
+game_counts <- bind_rows(fullRaw1, fullRaw2) %>% 
+  group_by(Season, Afix_TeamID) %>% 
+  dplyr::arrange(DayNum) %>% 
+  dplyr::mutate(Afix_count = row_number()) %>% 
+  dplyr::select(Season, DayNum, GameID, Afix_TeamID, Afix_count) |> 
+  ungroup() |> 
+  full_join(bind_rows(fullRaw1, fullRaw2) %>% 
+              group_by(Season, Bfix_TeamID) %>% 
+              dplyr::arrange(DayNum) %>% 
+              dplyr::mutate(Bfix_count = row_number()) %>% 
+              dplyr::select(Season, DayNum, GameID, Bfix_TeamID, Bfix_count) |> 
+              ungroup())
+
 # Elo Ratings -------------------------------------------------------------
 
 # Calculating ELO ratings: https://www.kaggle.com/lpkirwin/fivethirtyeight-elo-ratings
@@ -120,36 +137,39 @@ fullRaw2 <- fullRaw %>%
 # They also found home advantage parameter optimally to be 81.
 
 # Function for calculating game prediction from elo values home: -1 for away, 0 for neutral, 1 for home
-eloPred <- function(elo1, elo2, homeAdv = 81, home = 0) {
+elo_pred <- function(elo1, elo2, homeAdv = 81, home = 0) {
   return(1 / (1 + 10^((elo2 - (elo1 + home*homeAdv)) / 400)))
 }
 
 # Function for calculating updated elo values
-eloUpdate <- function(elo, pred, actual, k = 45) {
+elo_update <- function(elo, pred, actual, k = 45) {
   return(elo + k*(actual - pred))
 }
 
 # Function to reset team elos to average of previous season and conference average
-seasonReset <- function(oldElos, teamIDs, center = mean, 
+elo_reset <- function(oldElos, teamIDs, center = mean, 
                         confer = confInfo) {
   
   # Conference average elos
-  conf <- confer %>% filter(Season == oldElos$Season[1])
+  conf <- confer %>% 
+    dplyr::filter(Season == oldElos$Season[1])
   suppressMessages(confAvg <- oldElos %>% 
                      left_join(conf, by = c("team" = "TeamID")) %>% 
                      group_by(Conference) %>% 
                      summarize(eloAvg = center(elo)))
   
   # End of season elos
-  endElos <- oldElos %>% rename(TeamID = team, eloEnd = elo)
+  endElos <- oldElos %>% 
+    dplyr::rename(TeamID = team, eloEnd = elo)
   
   # Averaging end of season and conference average elos
   suppressMessages(newElos <- endElos %>% left_join(confAvg %>% 
                                                       left_join(confer %>% filter(Season == oldElos$Season[1]))) %>% 
-                     mutate(elo =  (eloEnd + eloAvg) / 2) %>% 
-                     dplyr::select(TeamID, elo) %>% filter(TeamID %in% teamIDs) %>% 
+                     dplyr::mutate(elo =  (eloEnd + eloAvg) / 2) %>% 
+                     dplyr::select(TeamID, elo) %>% 
+                     dplyr::filter(TeamID %in% teamIDs) %>% 
                      right_join(data.frame(TeamID = teamIDs)) %>% 
-                     mutate(elo = ifelse(is.na(elo), 1500, elo)))
+                     dplyr::mutate(elo = ifelse(is.na(elo), 1500, elo)))
   
   return(newElos)
 }
@@ -157,26 +177,25 @@ seasonReset <- function(oldElos, teamIDs, center = mean,
 # Function for adding elo values to data frame
 # scores: A data frame with columns Season, Afix_TeamID,
 # Bfix_TeamID, Afix_Loc, Afix_mov, Afix_win
-# kVal: Smoothing parameter for elo calculation
+# k_value: Smoothing parameter for elo calculation
 # method: One of "NBA" or "NFL". Specifies smoothing method in elo update.
-# eloStarts: Optional. Scalar or vector of starting elo values for unique TeamID's
+# elo_starts: Optional. Scalar or vector of starting elo values for unique TeamID's
 # tau: Second smoothing parameter for elo calculation
-addElo <- function(scores, method = "NFL", 
-                   kVal = 45, eloStarts = 1500, tau = 0.006,
-                   homeAdvantage = 81,
-                   centerFun = mean, returnRecent = FALSE) {
+add_elo <- function(scores, method = "NFL", 
+                   k_value = 45, elo_starts = 1500, tau = 0.006, home_advantage = 81,
+                   center_fun = mean, returnRecent = FALSE) {
   
   # Sorting rows to start
-  scores <- scores %>% arrange(Season, DayNum)
+  scores <- scores %>% dplyr::arrange(Season, DayNum)
   
   seasons <- unique(scores$Season)
-  nSeasons <- length(seasons)
-  output <- vector("list", nSeasons)
+  n_seasons <- length(seasons)
+  output <- vector("list", n_seasons)
   
-  pb <- progress_bar$new(total = nSeasons)
+  pb <- progress_bar$new(total = n_seasons)
   
-  for(s in 1:nSeasons) {
-    seasonData <- scores %>% filter(Season == seasons[s])
+  for(s in 1:n_seasons) {
+    seasonData <- scores %>% dplyr::filter(Season == seasons[s])
     teamIDs <- unique(c(seasonData$Afix_TeamID, 
                         seasonData$Bfix_TeamID))
     
@@ -192,7 +211,7 @@ addElo <- function(scores, method = "NFL",
     # Initialize elo columns
     seasonData <- seasonData %>% 
       mutate(Afix_elo = 1500, Bfix_elo = 1500)
-    elos <- data.frame(team = teamIDs, elo = eloStarts)
+    elos <- data.frame(team = teamIDs, elo = elo_starts)
     
     if(method == "NBA") {
       for(i in 1:nrow(seasonData)) {
@@ -203,26 +222,26 @@ addElo <- function(scores, method = "NFL",
         seasonData$Bfix_elo[i] <- elos$elo[Binds]
         
         # Elo prediction
-        pred <- eloPred(elo1 = seasonData$Afix_elo[i],
+        pred <- elo_pred(elo1 = seasonData$Afix_elo[i],
                         elo2 = seasonData$Bfix_elo[i], 
-                        home = homes[i], homeAdv = homeAdvantage)
+                        home = homes[i], homeAdv = home_advantage)
         
         # Margin of victory multipliers
         movMultiA <- mmNumerator[i] /
           (7.5 + tau*(seasonData$Afix_elo[i] - seasonData$Bfix_elo[i]))
         
         # Calculating new elo values
-        newA <- eloUpdate(elo = seasonData$Afix_elo[i], pred = pred,
-                          actual = Afix_win10[i], k = movMultiA*kVal)
+        newA <- elo_update(elo = seasonData$Afix_elo[i], pred = pred,
+                          actual = Afix_win10[i], k = movMultiA*k_value)
         newB <- seasonData$Bfix_elo[i] - (newA - seasonData$Afix_elo[i])
         
         # Updating elo values
         elos$elo[Ainds] <- newA
         elos$elo[Binds] <- newB
       }
-    } else if(method == "NFL"){
+    } else if(method == "NFL") {
       
-      ks <- kVal*log(1 + abs(seasonData$Afix_mov))
+      ks <- k_value*log(1 + abs(seasonData$Afix_mov))
       
       for(i in 1:nrow(seasonData)) {
         # Storing current elo values
@@ -232,12 +251,12 @@ addElo <- function(scores, method = "NFL",
         seasonData$Bfix_elo[i] <- elos$elo[Binds]
         
         # Elo prediction
-        pred <- eloPred(elo1 = seasonData$Afix_elo[i],
+        pred <- elo_pred(elo1 = seasonData$Afix_elo[i],
                         elo2 = seasonData$Bfix_elo[i], 
-                        home = homes[i], homeAdv = homeAdvantage)
+                        home = homes[i], homeAdv = home_advantage)
         
         # Calculating new elo values
-        newA <- eloUpdate(elo = seasonData$Afix_elo[i], pred = pred,
+        newA <- elo_update(elo = seasonData$Afix_elo[i], pred = pred,
                           actual = Afix_win10[i], k = ks[i])
         newB <- seasonData$Bfix_elo[i] - (newA - seasonData$Afix_elo[i])
         
@@ -249,14 +268,14 @@ addElo <- function(scores, method = "NFL",
     
     output[[s]] <- seasonData
     
-    if(s < nSeasons) {
+    if(s < n_seasons) {
       newSeason <- scores %>% filter(Season == seasons[s+1])
       newTeams <- unique(c(newSeason$Afix_TeamID, newSeason$Bfix_TeamID))
       
-      newElos <- seasonReset(oldElos = elos %>% mutate(Season = seasonData$Season[1]),
-                             teamIDs = newTeams, center = centerFun)
+      newElos <- elo_reset(oldElos = elos %>% mutate(Season = seasonData$Season[1]),
+                             teamIDs = newTeams, center = center_fun)
       
-      eloStarts <- newElos %>% pull(elo)
+      elo_starts <- newElos %>% pull(elo)
     }
     
     # Progress bar update
@@ -272,20 +291,21 @@ addElo <- function(scores, method = "NFL",
 runSim <- FALSE
 
 # Function for searching for optimal Elo parameters
-eloSim <- function(method, kVal = 45, tau, centerName) {
+elo_sim <- function(method, k_value = 45, tau, center_fun) {
   
-  if(centerName == "mean") {
-    centerFun <- mean
-  } else if(centerName == "median"){
-    centerFun <- median
+  if(center_fun == "mean") {
+    center_fun <- mean
+  } else if(center_fun == "median") {
+    center_fun <- median
   }
   
   # Calculating elo values across all seasons
-  fullElo1 <- addElo(scores = fullRaw1, 
-                     eloStarts = 1500, 
+  fullElo1 <- add_elo(scores = fullRaw1, 
+                     elo_starts = 1500, 
                      method = method, 
-                     kVal = kVal, tau = tau,
-                     centerFun = centerFun)
+                     k_value = k_value, 
+                     tau = tau,
+                     center_fun = center_fun)
   
   # Full performance of calculated elo scores for MOV
   eloMod1 <- lm(Afix_mov ~ 0 + Afix_elo + Bfix_elo, 
@@ -314,22 +334,22 @@ eloSim <- function(method, kVal = 45, tau, centerName) {
                     data = eloShuffled %>% filter(DayNum >= 50), family = "binomial")
   logisticAICNew <- summary(eloMod2New)$aic
   
-  return(data.frame(method = method, kVal = kVal, tau = tau,
-                    centerFun = centerName, r2 = r2Val, r2ValNew = r2ValNew,
+  return(data.frame(method = method, k_value = k_value, tau = tau,
+                    center_fun = center_fun, r2 = r2Val, r2ValNew = r2ValNew,
                     AIC = logisticAIC, logisticAICNew = logisticAICNew))
 }
 
 if(runSim == TRUE) {
   
   # Grid of tuning arameters
-  params <- expand.grid(kVal = seq(35, 60, by = 5),
+  params <- expand.grid(k_value = seq(35, 60, by = 5),
                         tau = 0.002,
                         method = c("NFL"),
-                        centerName = "mean")
+                        center_fun = "mean")
   
   # Finding optimal tuning parameters
   plan(multisession, workers = 3)
-  eloSimRes <- future_pmap_dfr(.l = params, .f = eloSim, .progress = TRUE)
+  eloSimRes <- future_pmap_dfr(.l = params, .f = elo_sim, .progress = TRUE)
   
   # Saving results
   saveRDS(eloSimRes, paste0(tourneyYear, ifelse(womens, "-Womens/", "/"), "eloSimRes.rds"))
@@ -338,27 +358,26 @@ if(runSim == TRUE) {
   # Plotting results
   eloSimRes %>% pivot_longer(cols = r2:logisticAICNew, values_to = "Value",
                              names_to = "Metric") %>% 
-    filter(centerFun == "mean") %>% ggplot(aes(x = kVal, y = Value, color = tau)) + 
+    filter(center_fun == "mean") %>% ggplot(aes(x = k_value, y = Value, color = tau)) + 
     geom_point() + facet_grid(Metric ~ method, scales = "free_y")
   
   # Table of optimal values
   eloSimRes %>% pivot_longer(cols = r2:logisticAICNew, values_to = "Value",
                              names_to = "Metric") %>% 
     mutate(Value = ifelse(Metric %in% c("r2", "r2ValNew"), Value, -Value)) %>% 
-    arrange(kVal) %>% group_by(centerFun, method, Metric) %>% slice_max(order_by = Value, n = 1, with_ties = FALSE)
+    arrange(k_value) %>% group_by(center_fun, method, Metric) %>% slice_max(order_by = Value, n = 1, with_ties = FALSE)
 }
+
+# scores = fullRaw1; method = "NFL"; k_value = 45;
+# elo_starts = 1500; center_fun = mean;
+# home_advantage = 81; returnRecent = TRUE
 
 # Calculating elo values across all seasons
-eloRes <- addElo(scores = fullRaw1, method = "NFL", kVal = 45,
-                 eloStarts = 1500, centerFun = mean,
-                 homeAdvantage = 81, returnRecent = ifelse(stage == 2, TRUE, FALSE))
+eloRes <- add_elo(scores = fullRaw1, method = "NFL", k_value = 45,
+                 elo_starts = 1500, center_fun = mean,
+                 home_advantage = 81, returnRecent = TRUE)
 
-if(stage == 2) {
-  newElos <- eloRes$newElos
-  fullElo1 <- eloRes$eloData
-} else {
-  fullElo1 <- eloRes
-}
+fullElo1 <- eloRes$eloData
 
 # Performance of calculated elo scores
 eloMod1 <- lm(Afix_mov ~ 0 + Afix_elo + Bfix_elo, 
@@ -385,6 +404,21 @@ fullElo1 %>% group_by(Season) %>%
   ggplot(aes(x = Season, y = Value, color = Metric)) + 
   geom_line(aes(x = Season)) + labs(title = "Elo Across Seasons") + 
   theme_bw()
+
+# Make last game ELO values equal to most recent ELO value for final season if final fit
+if(finalFit == TRUE) { 
+  lastElos <- fullElo1 %>% 
+    dplyr::filter(Season == tourneyYear) %>% 
+    arrange(desc(DayNum)) %>% 
+    group_by(Afix_TeamID) %>% 
+    slice_head(n = 1) %>% ungroup() %>% 
+    dplyr::select(-Afix_elo, -Bfix_elo) %>% 
+    dplyr::filter(Season == tourneyYear) %>% 
+    left_join(eloRes$newElos, by = c("Afix_TeamID" = "team")) %>% 
+    left_join(eloRes$newElos, by = c("Bfix_TeamID" = "team")) %>% 
+    dplyr::rename(Afix_elo = `elo.x`, Bfix_elo = `elo.y`) %>% 
+    dplyr::select(Season:Bfix_TeamID, Afix_elo:Bfix_elo)
+}
 
 # Adding in team name
 teamNames <- read_csv(paste0(stageDir, ifelse(womens, "W", "M"), "Teams.csv")) %>% 
@@ -415,13 +449,22 @@ fullElo2 <- fullRaw2 %>% dplyr::mutate(Afix_elo = fullElo1$Bfix_elo,
 longElo <- bind_rows(fullElo1, fullElo2) %>% 
   group_by(Season, Afix_TeamID) %>% 
   arrange(DayNum) %>% 
-  dplyr::mutate(Afix_count = seq(n()), across(.cols = starts_with(c("A_", "B_")),
+  dplyr::mutate(Afix_count = row_number(), across(.cols = starts_with(c("A_", "B_")),
                                        .fns = ~ cumsum(.x) / Afix_count)) %>% 
   dplyr::select(Season, DayNum, GameID, Afix_count, starts_with(c("Afix_", "Bfix_")),
-                starts_with(c("A_", "B_")), -Bfix_Loc) %>% 
-  dplyr::mutate(across(starts_with(c("A_", "B_")), ~ dplyr::lag(.x, n = 1))) %>% ungroup() %>% 
+                starts_with(c("A_", "B_")), -Bfix_Loc)
+
+# Lag information by 1 game to prevent "data leakage" if not final fit
+if(finalFit == FALSE) {
+  longElo <- longElo %>% 
+    dplyr::mutate(dplyr::across(starts_with(c("A_", "B_")), ~ dplyr::lag(.x, n = 1)))
+} 
+
+# Add game count for Team B
+longElo <- longElo %>% ungroup() %>% 
   group_by(Season, Bfix_TeamID) %>% 
-  dplyr::mutate(Bfix_count = seq(n())) %>% ungroup()
+  dplyr::mutate(Bfix_count = row_number()) %>% 
+  ungroup()
 
 # Including both 'for' and 'against' info for each game, rather than just 'for'
 wideElo <- longElo %>% 
@@ -429,19 +472,97 @@ wideElo <- longElo %>%
                            fixed = TRUE), .cols = starts_with("A_")) %>% 
   rename_with(.fn = ~ gsub("B_", "A_against_", .x,
                            fixed = TRUE), .cols = starts_with("B_")) %>% 
-  arrange(GameID) %>% mutate(Ref = ifelse(Afix_mov > 0, "-A", "-B")) %>% 
+  arrange(GameID) %>% 
+  dplyr::mutate(Ref = ifelse(Afix_mov > 0, "-A", "-B")) %>% 
   pivot_wider(id_cols = c(Season, DayNum, GameID), 
               values_from = starts_with(c("A_", "B_")), 
               names_from = Ref) %>% 
   rename_with(.fn =  ~ gsub("_-A", "", .x, fixed = TRUE), .cols = ends_with("_-A")) %>% 
   rename_with(.fn =  ~ gsub("A_", "B_", gsub("_-B", "", .x, fixed = TRUE), fixed = TRUE),
-              .cols = ends_with("_-B")) %>% left_join(longElo %>% 
-                                                        filter(Afix_mov > 0) %>% dplyr::select(-starts_with(c("A_", "B_")))) %>% 
+              .cols = ends_with("_-B")) %>% 
+  left_join(longElo %>% dplyr::filter(Afix_mov > 0) %>% 
+              dplyr::select(-starts_with(c("A_", "B_")))) %>% 
   dplyr::select(Season, DayNum, GameID, starts_with(c("Afix_", "Bfix_")), everything())
 
 t2 <- Sys.time()
 
 t2 - t1
+
+# Add Pythagorean Winning Percentage --------------------------------------
+
+# Formula from Ken Pom: https://kenpom.com/blog/ratings-glossary/
+# Ken Pom uses 11.5 for the exponent, but there is not one correct value as others use 13.91
+# Also adding in Luck: difference between actual winning % & Pythagorean expected winning %
+exp_value <- 1.5
+wideElo <- wideElo %>% 
+  dplyr::mutate(Afix_Pyth = (A_for_Score_Eff^exp_value) / (A_for_Score_Eff^exp_value + A_against_Score_Eff^exp_value),
+         Bfix_Pyth = (B_for_Score_Eff^exp_value) / (B_for_Score_Eff^exp_value + B_against_Score_Eff^exp_value),
+         Afix_Luck = A_for_win_rate - Afix_Pyth,
+         Bfix_Luck = B_for_win_rate - Bfix_Pyth)
+
+# Determining optimal exp_value
+if(FALSE) {
+  
+pyth_exp_finder <- function(value) {
+  pyth_elo <- wideElo %>% 
+    dplyr::mutate(Afix_Pyth = (A_for_Score^exp_value) / (A_for_Score^exp_value + A_against_Score^exp_value),
+                  Bfix_Pyth = (B_for_Score^exp_value) / (B_for_Score^exp_value + B_against_Score^exp_value),
+                  Afix_Luck = A_for_win_rate - Afix_Pyth,
+                  Bfix_Luck = B_for_win_rate - Bfix_Pyth)
+  
+  ret_r2 <- summary(lm(Afix_mov ~ 0 + Afix_Pyth + Bfix_Pyth + Afix_Luck + Bfix_Luck, 
+                data = pyth_elo))$r.squared
+  return(ret_r2)
+}
+
+library(tidymodels)
+
+pyth_exp_finder_new <- function(value) {
+  pyth_elo <- wideElo %>% 
+    dplyr::mutate(Afix_Pyth = (A_for_Score^exp_value) / (A_for_Score^exp_value + A_against_Score^exp_value),
+                  Bfix_Pyth = (B_for_Score^exp_value) / (B_for_Score^exp_value + B_against_Score^exp_value),
+                  Afix_Luck = A_for_win_rate - Afix_Pyth,
+                  Bfix_Luck = B_for_win_rate - Bfix_Pyth)
+  
+  # Define a linear regression model
+  lm_model <- linear_reg() %>%
+    set_engine("lm")
+  
+  # Create a recipe
+  rec <- recipe(Afix_mov ~ 0 + Afix_Pyth + Bfix_Pyth + Afix_Luck + Bfix_Luck, data = pyth_elo)
+  
+  # Set up the workflow
+  wf <- workflow() %>%
+    add_recipe(rec) %>%
+    add_model(lm_model)
+  
+  # Perform LOOCV
+  cv_results <- fit_resamples(wf, resamples = vfold_cv(pyth_elo, v = 20)) |> 
+    collect_metrics() |> 
+    dplyr::filter(.metric == "rsq") |> 
+    dplyr::pull(mean)
+  
+  return(cv_results)
+}
+
+cand_exps <- seq(2, 30, by = 2)
+r2s <- map_dbl(.x = cand_exps, .f = pyth_exp_finder)
+r2_cvs <- map_dbl(.x = cand_exps, .f = pyth_exp_finder_new)
+
+# Plotting candidate exponential values performances
+tibble(Value = rep(cand_exps, times = 2), 
+       R2 = c(r2s, r2_cvs),
+       Method = rep(c("Standard", "CV"), each = length(cand_exps))) |> 
+  ggplot(aes(x = Value, y = R2, color = Method)) +
+  geom_line() +
+  geom_point(color = "black") +
+  facet_wrap(~ Method, ncol = 2, scales = "free_y") + 
+  labs(title = expression("R"^2*" by exponential values for Pythagorean Winning Percentage"),
+       y = expression("R"^2*""),
+       x = "Exponential value") +
+  ggthemes::theme_few() +
+  theme(legend.position = "none")
+}
 
 # Offensive & Defensive Efficiency ----------------------------------------
 
@@ -528,7 +649,7 @@ if(FALSE) {
   # boxscores: A data frame with columns Season, DayNum, Afix_TeamID,
   # Bfix_TeamID, Afix_Loc, A_metric, B_metric
   # steep: Smoothing parameter for metric calculation
-  # kVal: Second smoothing parameter for metric calculation
+  # k_value: Second smoothing parameter for metric calculation
   # mStarts: Optional. Data frame with columns 
   # offensive (adjMetricOff) and defensive (adjMetricDef) initial adjusted metric values for unique TeamID's
   # tau: Second smoothing parameter for metric calculation
@@ -537,15 +658,15 @@ if(FALSE) {
                         kfloor = 0.20, 
                         startOff = 1, 
                         startDef = 1, 
-                        homeAdvantage = 0.03,
-                        centerFun = mean, returnRecent = FALSE) {
+                        home_advantage = 0.03,
+                        center_fun = mean, returnRecent = FALSE) {
     
     # Sorting rows to start
     boxscores <- boxscores %>% dplyr::arrange(Season, DayNum)
     
     seasons <- unique(boxscores$Season)
-    nSeasons <- length(seasons)
-    output <- vector("list", nSeasons)
+    n_seasons <- length(seasons)
+    output <- vector("list", n_seasons)
     
     newTeams <- unique(c(dplyr::pull(dplyr::filter(boxscores, Season == seasons[1]), Afix_TeamID), 
                          dplyr::pull(dplyr::filter(boxscores, Season == seasons[1]), Bfix_TeamID)))
@@ -554,9 +675,9 @@ if(FALSE) {
     mStarts <- data.frame(TeamID = newTeams,
                           adjMetricOff = startOff, adjMetricDef = startDef)
     
-    pb <- progress::progress_bar$new(total = nSeasons)
+    pb <- progress::progress_bar$new(total = n_seasons)
     
-    for(s in 1:nSeasons) {
+    for(s in 1:n_seasons) {
       seasonData <- boxscores %>% dplyr::filter(Season == seasons[s])
       
       homes <- ifelse(seasonData$Afix_Loc == "N", 0,
@@ -590,12 +711,12 @@ if(FALSE) {
         predA <- metricPred(mOff = seasonData$A_adjMetricOff[i],
                             mDef = seasonData$B_adjMetricDef[i], 
                             home = homes[i], 
-                            homeAdv = homeAdvantage)
+                            homeAdv = home_advantage)
         
         predB <- metricPred(mOff = seasonData$B_adjMetricOff[i],
                             mDef = seasonData$A_adjMetricDef[i], 
                             home = homes[i]*(-1), 
-                            homeAdv = homeAdvantage)
+                            homeAdv = home_advantage)
         
         # Calculating new metric values
         newAOff <- metricUpdate(metric = seasonData$A_adjMetricOff[i], pred = predA,
@@ -616,12 +737,12 @@ if(FALSE) {
       
       output[[s]] <- seasonData
       
-      if(s < nSeasons) {
+      if(s < n_seasons) {
         newSeason <- boxscores %>% dplyr::filter(Season == seasons[s+1])
         newTeams <- unique(c(newSeason$Afix_TeamID, newSeason$Bfix_TeamID))
         
         newMets <- metricSeasonReset(oldMets = mets %>% mutate(Season = seasonData$Season[1]),
-                                     teamIDs = newTeams, center = centerFun)
+                                     teamIDs = newTeams, center = center_fun)
         
         mStarts <- newMets
       }
@@ -804,26 +925,25 @@ if(FALSE) {
     theme(legend.position = "none")
   
   # Detrending scoring efficiency values within each season
-  
   plot3D(rollMeansDetrendedOff)
   
   if(FALSE) {
     boxscores = bs 
-    kVal = 0.10
+    k_value = 0.10
     startOff = 1
     startDef = 1
-    centerFun = mean
-    homeAdvantage = 0.05 
+    center_fun = mean
+    home_advantage = 0.05 
     returnRecent = FALSE
   }
   
   # Trying using points per possessoion (offensive efficiency)
   metRes <- addMetric(boxscores = bs, 
-                      kVal = 1,
+                      k_value = 1,
                       startOff = 1.02,
                       startDef = 1.02, 
-                      centerFun = mean,
-                      homeAdvantage = 0.03, 
+                      center_fun = mean,
+                      home_advantage = 0.03, 
                       returnRecent = FALSE)
   
   # Plotting as sanity check
@@ -843,7 +963,8 @@ if(FALSE) {
 if(womens == FALSE) {
   # Adding in Massey ordinal ranking data
   # Descriptions / info for systems: https://masseyratings.com/cb/compare.htm
-  massey <- data.table::fread(paste0(stageDir, "MMasseyOrdinals_thru_Season2023_Day128.csv")) %>% 
+  massey <- data.table::fread(paste0(stageDir, "MMasseyOrdinals_thru_Season", 
+                                     tourneyYear, "_Day128.csv")) %>% 
     as.data.frame() %>% dplyr::rename(DayNum = RankingDayNum) 
   
   # Exploring which systems have collective most complete data
@@ -870,14 +991,15 @@ if(womens == FALSE) {
   
   # Imputing for ordinal rankings when 1 of 4 are missing. 
   # Can use rowSums since Season, DayNum, & TeamID are all complete
-  masseyMiss <- wideMassey %>% dplyr::select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin) %>% 
-    filter((is.na(Pomeroy) + is.na(Moore) + is.na(Sagarin)) < 2)
+  masseyMiss <- wideMassey %>% 
+    dplyr::select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin) %>% 
+    dplyr::filter((is.na(Pomeroy) + is.na(Moore) + is.na(Sagarin)) < 2)
   
   # Impute ordinal ratings when 1 of 4 is missing using random forest
   masseyImpute <- bind_cols(masseyMiss %>% dplyr::select(-c(Pomeroy:Sagarin)), 
                             masseyMiss %>% dplyr::select(Pomeroy:Sagarin) %>% 
-                              mice(defaultMethod = "rf", seed = 1994, m = 1, maxit = 1) %>% 
-                              complete())
+                              mice::mice(defaultMethod = "rf", seed = 1994, m = 1, maxit = 1) %>% 
+                              mice::complete())
   
   # Adding ordinal ratings to box scores and elo data
   # Carry last rating forward for each team in each season via the fill function
@@ -885,13 +1007,13 @@ if(womens == FALSE) {
                                        dplyr::select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin),
                                      by = c("Season" = "Season", "DayNum" = "DayNum",
                                             "Afix_TeamID" = "TeamID")) %>% 
-    rename(Afix_Pomeroy = Pomeroy, Afix_Moore = Moore, 
+    dplyr::rename(Afix_Pomeroy = Pomeroy, Afix_Moore = Moore, 
            Afix_Sagarin = Sagarin) %>% 
     full_join(masseyImpute %>% 
                 dplyr::select(Season, DayNum, TeamID, Pomeroy, Moore, Sagarin),
               by = c("Season" = "Season", "DayNum" = "DayNum",
                      "Bfix_TeamID" = "TeamID")) %>% 
-    rename(Bfix_Pomeroy = Pomeroy, Bfix_Moore = Moore, 
+    dplyr::rename(Bfix_Pomeroy = Pomeroy, Bfix_Moore = Moore, 
            Bfix_Sagarin = Sagarin) %>% 
     arrange(Season, DayNum) %>% group_by(Season, Afix_TeamID) %>% 
     tidyr::fill(c(Afix_Pomeroy, Afix_Moore, Afix_Sagarin), .direction = "down") %>% 
@@ -902,7 +1024,8 @@ if(womens == FALSE) {
   # Testing to see if columns seem reasonable
   
   # Randomly dplyr::selecting some games to have Team A lose
-  eloMasseyMix <- eloMassey %>% filter(Afix_mov %% 2 == 1) %>% 
+  eloMasseyMix <- eloMassey %>% 
+    dplyr::filter(Afix_mov %% 2 == 1) %>% 
     rename_with(.fn =  ~ str_replace_all(string = .x, c("Afix_" = "Xfix_", "A_" = "X_",
                                                         "Bfix_" = "Yfix_", "B_" = "Y_")),
                 .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc"))) %>% 
@@ -926,103 +1049,124 @@ if(womens == FALSE) {
 
 # Adding in pre-season AP rank --------------------------------------------
 
+# Consider exponential decay of weight of AP rank based on inverse of number of games played, e.g. f(x) = 5  + 0.5*exp(-0.1 * x)
+
 if(womens == FALSE) {
   # Preseason poll data from sports-reference: https://www.sports-reference.com/cbb/seasons/2003-polls.html
+  #                                          : https://www.sports-reference.com/cbb/seasons/women/2010-polls.html
   # AP rankings from Kaggle did not seem to have preseason AP rankings for teams
-  apPres <- list.files("AP/") %>% str_subset(pattern = "csv") %>% map_dfr(.f = function(myFile) {
+  apPres <- list.files(paste0("AP/", ifelse(womens, "womens/", "mens/"))) %>% 
+    str_subset(pattern = "csv") %>% 
+    map_dfr(.f = function(myFile) {
     season <- str_sub(str_split(myFile, pattern = "-")[[1]][2], start = 1, end = 4)
-    ret <- read_csv(paste0("AP/", myFile), 
-                    skip = 2, show_col_types = FALSE) %>% dplyr::select(School, Pre) %>% drop_na() %>% 
+    ret <- read_csv(paste0("AP/", ifelse(womens, "womens/", "mens/"), myFile), 
+                    skip = 2, show_col_types = FALSE) %>% 
+      dplyr::select(School, Pre) %>% 
+      drop_na() %>% 
       mutate(Season = as.numeric(season))
-  }) %>% mutate(TeamNameSpelling = tolower(School)) %>% 
+  }) %>% 
+    dplyr::mutate(TeamNameSpelling = tolower(School)) %>% 
     left_join(read_csv(paste0(stageDir, ifelse(womens, "W", "M"), "TeamSpellings.csv"))) %>% 
-    rename(AP = Pre) %>% dplyr::select(Season, TeamID, AP)
+    dplyr::rename(AP = Pre) %>% 
+    dplyr::select(Season, TeamID, AP)
+  
+  # Imputing initial AP ranks using previous season's ending elo & other info
+  old_elo_pyth <- wideElo %>% 
+    group_by(Season, Afix_TeamID) %>%
+    slice_max(DayNum, n = 1) %>% 
+    ungroup() %>% 
+    dplyr::select(Season, DayNum, Afix_TeamID, Afix_elo) |> 
+    dplyr::rename(TeamID = Afix_TeamID, elo = Afix_elo) |> 
+    bind_rows(wideElo %>% 
+                group_by(Season, Bfix_TeamID) %>%
+                slice_max(DayNum, n = 1) %>% 
+                ungroup() %>% 
+                dplyr::select(Season, DayNum, Bfix_TeamID, Bfix_elo) |> 
+                dplyr::rename(TeamID = Bfix_TeamID, elo = Bfix_elo)) |> 
+    group_by(Season, TeamID) |> 
+    slice_max(DayNum, n = 1, with_ties = FALSE) |> 
+    ungroup() |> 
+    dplyr::mutate(Season = Season + 1) |> 
+    dplyr::select(-DayNum) 
   
   # Imputing initial AP ranks using Massey ordinals
-  apMiss <- masseyImpute %>% arrange(Season, DayNum) %>% group_by(Season, TeamID) %>%
-    slice(1) %>% ungroup() %>% full_join(apPres) %>% group_by(Season) %>% 
-    mutate(AggRank = rank(Pomeroy+Moore+Sagarin)) %>% ungroup() %>% 
-    mutate(AP = case_when(is.na(AP) ~ AggRank, 
-                          TRUE ~ AP)) %>% dplyr::select(Season, TeamID, AP)
+  apMiss <- masseyImpute %>% 
+    dplyr::arrange(Season, DayNum) %>% 
+    group_by(Season, TeamID) %>%
+    slice(1) %>% 
+    ungroup() %>% 
+    full_join(apPres) %>% 
+    group_by(Season) %>% 
+    dplyr::mutate(AggRank = rank(Pomeroy + Moore + Sagarin)) %>% 
+    ungroup() %>% 
+    dplyr::mutate(AP = case_when(is.na(AP) ~ AggRank, 
+                          TRUE ~ AP)) %>% 
+    dplyr::select(Season, TeamID, AP)
+  
+  |> 
+    left_join(apPres)
+  
+  # Estimating relationship between elo and AP preseason rank
+  ap_elo_pyth_mod <- lm(AP ~ elo, data = old_elo_pyth)
+  
+  %>% 
+    group_by(Season) %>% 
+    dplyr::mutate(AggRank = rank(Pomeroy + Moore + Sagarin)) %>% 
+    ungroup() %>% 
+    dplyr::mutate(AP = case_when(is.na(AP) ~ AggRank, 
+                                 TRUE ~ AP)) %>% 
+    dplyr::select(Season, TeamID, AP) 
   
   # Adding into full data
   eloMasseyAP <- eloMassey %>% 
     left_join(apMiss, by = c("Season" = "Season",  "Afix_TeamID" = "TeamID")) %>% 
     left_join(apMiss, by = c("Season" = "Season",  "Bfix_TeamID" = "TeamID")) %>% 
-    rename(Afix_AP = AP.x, Bfix_AP = AP.y)
+    dplyr::rename(Afix_AP = AP.x, Bfix_AP = AP.y)
   
-  # Randomly dplyr::selecting some games to have Team A lose
-  eloMasseyAPMix <- eloMasseyAP %>% filter(Afix_mov %% 2 == 1) %>% 
-    rename_with(.fn =  ~ str_replace_all(string = .x, c("Afix_" = "Xfix_", "A_" = "X_",
-                                                        "Bfix_" = "Yfix_", "B_" = "Y_")),
-                .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc"))) %>% 
-    bind_rows(eloMasseyAP %>% filter(Afix_mov %% 2 == 0) %>% 
-                mutate(Afix_mov = -Afix_mov, Afix_win = !Afix_win,
-                       Afix_Loc = case_when(Afix_Loc == "A" ~ "H",
-                                            Afix_Loc == "H" ~ "A",
-                                            TRUE ~ Afix_Loc)) %>% 
-                rename_with(.fn =  ~ str_replace_all(string = .x, c("Bfix_" = "Xfix_", "B_" = "X_",
-                                                                    "Afix_" = "Yfix_", "A_" = "Y_")),
-                            .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc")))) %>% 
-    rename_with(.fn =  ~ str_replace_all(string = .x, c("Xfix_" = "Afix_", "X_" = "A_",
-                                                        "Yfix_" = "Bfix_", "Y_" = "B_")),
-                .cols = everything())
-  
-  # Removing first G games of the season for each team
-  # e.g., G=1 means exclude games where it is any teams first game of season
-  G <- 3
-  smallEloMasseyAPMix <- eloMasseyAPMix %>% filter(Afix_count > G, Bfix_count > G)
-  eloMasseyAPMix <- smallEloMasseyAPMix
-  
-  summary(lm(Afix_mov ~ Afix_elo + Bfix_elo, 
-             data = smallEloMasseyAPMix))
-  
+  # Creating myopic data set from team A's perspective as winner always
+  myopicData <- eloMasseyAP
 } else {
-  # Randomly dplyr::selecting some games to have Team A lose
-  eloMasseyAPMix <- wideElo %>% filter(Afix_mov %% 2 == 1) %>% 
-    rename_with(.fn =  ~ str_replace_all(string = .x, c("Afix_" = "Xfix_", "A_" = "X_",
-                                                        "Bfix_" = "Yfix_", "B_" = "Y_")),
-                .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc"))) %>% 
-    bind_rows(wideElo %>% filter(Afix_mov %% 2 == 0) %>% 
-                mutate(Afix_mov = -Afix_mov, Afix_win = !Afix_win,
-                       Afix_Loc = case_when(Afix_Loc == "A" ~ "H",
-                                            Afix_Loc == "H" ~ "A",
-                                            TRUE ~ Afix_Loc)) %>% 
-                rename_with(.fn = ~ str_replace_all(string = .x, c("Bfix_" = "Xfix_", "B_" = "X_",
-                                                                   "Afix_" = "Yfix_", "A_" = "Y_")),
-                            .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc")))) %>% 
-    rename_with(.fn =  ~ str_replace_all(string = .x, c("Xfix_" = "Afix_", "X_" = "A_",
-                                                        "Yfix_" = "Bfix_", "Y_" = "B_")),
-                .cols = everything())
-  
-  # Removing first G games of the season for each team
-  # e.g., G=1 means exclude games where it is any teams first game of season
-  G <- 3
-  eloMasseyAPMix <- eloMasseyAPMix %>% filter(Afix_count > G, Bfix_count > G)
-  
-  summary(lm(Afix_mov ~ Afix_elo + Bfix_elo, 
-             data = eloMasseyAPMix))
+  myopicData <- wideElo
 }
 
-# Add Pythagorean Winning Percentage --------------------------------------
+# Randomly selecting some games to have Team A lose
+eloMasseyAPMix <- myopicData %>% 
+  dplyr::filter(Afix_mov %% 2 == 1) %>% 
+  rename_with(.fn =  ~ str_replace_all(string = .x, c("Afix_" = "Xfix_", "A_" = "X_",
+                                                      "Bfix_" = "Yfix_", "B_" = "Y_")),
+              .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc"))) %>% 
+  bind_rows(myopicData %>% 
+              dplyr::filter(Afix_mov %% 2 == 0) %>% 
+              dplyr::mutate(Afix_mov = -Afix_mov, Afix_win = !Afix_win,
+                            Afix_Loc = case_when(Afix_Loc == "A" ~ "H",
+                                                 Afix_Loc == "H" ~ "A",
+                                                 TRUE ~ Afix_Loc)) %>% 
+              rename_with(.fn = ~ str_replace_all(string = .x, c("Bfix_" = "Xfix_", "B_" = "X_",
+                                                                 "Afix_" = "Yfix_", "A_" = "Y_")),
+                          .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc")))) %>% 
+  rename_with(.fn =  ~ str_replace_all(string = .x, c("Xfix_" = "Afix_", "X_" = "A_",
+                                                      "Yfix_" = "Bfix_", "Y_" = "B_")),
+              .cols = everything())
 
-# Formula from Ken Pom: https://kenpom.com/blog/ratings-glossary/
-# Ken Pom uses 11.5 for the exponent, but there is not one correct value as others use 13.91
-# Also adding in Luck: difference between actual winning % & Pythagorean expected winning %
-expValue <- 11.5
+# Removing first G games of the season for each team
+# e.g., G=1 means exclude games where it is any teams first game of season
+G <- 3
 eloMasseyAPMix <- eloMasseyAPMix %>% 
-  mutate(Afix_Pyth = (A_for_Score_Eff^expValue) / (A_for_Score_Eff^expValue + A_against_Score_Eff^expValue),
-         Bfix_Pyth = (B_for_Score_Eff^expValue) / (B_for_Score_Eff^expValue + B_against_Score_Eff^expValue),
-         Afix_Luck = A_for_win_rate - Afix_Pyth,
-         Bfix_Luck = B_for_win_rate - Bfix_Pyth)
+  dplyr::filter(Afix_count > G, Bfix_count > G)
+
+summary(lm(Afix_mov ~ Afix_elo + Bfix_elo, 
+           data = eloMasseyAPMix))
 
 # Sanity Checks ---------------------------------------------
 
 # Sanity check for data leakage or other issues using cv.glmnet
 
-# Creating design matrix
+# Truncating data
 yearCutOff <- 2010
-eloMasseyAPMix <- eloMasseyAPMix %>% dplyr::filter(Season >= yearCutOff)
+eloMasseyAPMix <- eloMasseyAPMix %>% 
+  dplyr::filter(Season >= yearCutOff)
+
+# Creating design matrix
 designMat <- eloMasseyAPMix %>% 
   dplyr::select(-Afix_count, -Bfix_count,
                 -Season, -DayNum, -GameID, -Afix_TeamID,
@@ -1030,9 +1174,12 @@ designMat <- eloMasseyAPMix %>%
                 -Bfix_Conference, -Afix_mov) %>% 
   model.matrix(object = formula(Afix_win ~ 0 + .)) %>% 
   as.data.frame() %>% 
-  mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
+  dplyr::mutate(across(.cols = everything(), .fns = \(x) scale(x, center = TRUE, scale = TRUE))) %>% 
   as.matrix()
 
+sanityCheck <- FALSE
+
+if(sanityCheck == TRUE) {
 # Fitting lasso-penalized model
 library(glmnet)
 set.seed(1994)
@@ -1058,32 +1205,34 @@ preds <- fitRes %>% pull(Predictor) %>%
 predSummary <- tibble(Pred = names(coef(cvModel, s = "lambda.min")[, 1]), 
                       Coeff = coef(cvModel, s = "lambda.min")[, 1]) %>% 
   arrange(desc(abs(Coeff)))
+}
 
 if(womens == FALSE) {
   # Creating first-order design matrix for model fitting
+  pkeeps <- c('Afix_win', 'Afix_Loc', 
+              'Afix_AP', 'Bfix_AP', 
+              'Afix_elo', 'Bfix_elo', 
+              'Afix_Moore', 'Bfix_Moore', 
+              'Afix_Pomeroy', 'Bfix_Pomeroy', 
+              'Afix_Sagarin', 'Bfix_Sagarin', 
+              'A_for_FGA3', 'B_for_FGA3', 
+              'A_for_FTA', 'B_for_FTA', 
+              'A_for_Ast', 'B_for_Ast', 
+              'A_for_Stl', 'B_for_Stl', 
+              'A_for_Blk', 'B_for_Blk', 
+              'A_for_Score_Eff', 'B_for_Score_Eff', 
+              'A_for_Margin_Eff', 'B_for_Margin_Eff', 
+              'A_for_TO_rate', 'B_for_TO_rate', 
+              'A_for_OR_rate', 'B_for_OR_rate', 
+              'A_for_Luck', 'B_for_Luck', 
+              'A_against_FGM', 'B_against_FGM', 
+              'A_against_FTA', 'B_against_FTA', 
+              'A_against_OR', 'B_against_OR', 
+              'A_against_Ast', 'B_against_Ast', 
+              'A_against_Margin_Eff', 'B_against_Margin_Eff', 
+              'A_against_TO_rate', 'B_against_TO_rate')
   designMatFit <- eloMasseyAPMix %>% 
-    dplyr::select(Afix_win, Afix_Loc, 
-                  Afix_AP, Bfix_AP, 
-                  Afix_elo, Bfix_elo,
-                  Afix_Moore, Bfix_Moore, 
-                  Afix_Pomeroy, Bfix_Pomeroy,
-                  Afix_Sagarin, Bfix_Sagarin,
-                  A_for_FGA3, B_for_FGA3,
-                  A_for_FTA, B_for_FTA,
-                  A_for_Ast, B_for_Ast,
-                  A_for_Stl, B_for_Stl,
-                  A_for_Blk, B_for_Blk,
-                  A_for_Score_Eff, B_for_Score_Eff,
-                  A_for_Margin_Eff, B_for_Margin_Eff,
-                  A_for_TO_rate, B_for_TO_rate,
-                  A_for_OR_rate, B_for_OR_rate,
-                  A_for_Luck, B_for_Luck,
-                  A_against_FGM, B_against_FGM,
-                  A_against_FTA, B_against_FTA,
-                  A_against_OR, B_against_OR,
-                  A_against_Ast, B_against_Ast,
-                  A_against_Margin_Eff, B_against_Margin_Eff,
-                  A_against_TO_rate, B_against_TO_rate) %>%  
+    dplyr::select(all_of(pkeeps)) %>%  
     model.matrix(object = formula(Afix_win ~ 0 + .)) %>% 
     as.data.frame() %>% 
     mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
@@ -1091,63 +1240,43 @@ if(womens == FALSE) {
   
   # Creating second-order design matrix for model fitting
   designMatFit2 <- eloMasseyAPMix %>% 
-    dplyr::select(Afix_win, Afix_Loc, 
-                  Afix_AP, Bfix_AP, 
-                  Afix_elo, Bfix_elo,
-                  Afix_Moore, Bfix_Moore, 
-                  Afix_Pomeroy, Bfix_Pomeroy,
-                  Afix_Sagarin, Bfix_Sagarin,
-                  A_for_FGA3, B_for_FGA3,
-                  A_for_FTA, B_for_FTA,
-                  A_for_Ast, B_for_Ast,
-                  A_for_Stl, B_for_Stl,
-                  A_for_Blk, B_for_Blk,
-                  A_for_Score_Eff, B_for_Score_Eff,
-                  A_for_Margin_Eff, B_for_Margin_Eff,
-                  A_for_TO_rate, B_for_TO_rate,
-                  A_for_OR_rate, B_for_OR_rate,
-                  A_for_Luck, B_for_Luck,
-                  A_against_FGM, B_against_FGM,
-                  A_against_FTA, B_against_FTA,
-                  A_against_OR, B_against_OR,
-                  A_against_Ast, B_against_Ast,
-                  A_against_Margin_Eff, B_against_Margin_Eff,
-                  A_against_TO_rate, B_against_TO_rate) %>%  
+    dplyr::select(all_of(pkeeps)) %>%  
     model.matrix(object = formula(Afix_win ~ 0 + .^2)) %>% 
     as.data.frame() %>% 
     mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
     as.matrix()
 } else {
   # Creating first-order design matrix for model fitting
+  pkeeps <- c('Afix_win', 'Afix_Loc', 
+              'Afix_elo', 'Bfix_elo', 
+              'A_for_FGM', 'B_for_FGM', 
+              'A_for_FGM3', 'B_for_FGM3', 
+              'A_for_FGA3', 'B_for_FGA3', 
+              'A_for_Ast', 'B_for_Ast', 
+              'A_for_Stl', 'B_for_Stl', 
+              'A_for_Blk', 'B_for_Blk', 
+              'A_for_PF', 'B_for_PF', 
+              'A_for_Score_Eff', 'B_for_Score_Eff', 
+              'A_for_Margin_Eff', 'B_for_Margin_Eff', 
+              'A_for_OR_rate', 'B_for_OR_rate', 
+              'A_for_win_rate', 'B_for_win_rate', 
+              'A_for_Luck', 'B_for_Luck', 
+              'A_against_FGM', 'B_against_FGM', 
+              'A_against_FGA', 'B_against_FGA', 
+              'A_against_FGM3', 'B_against_FGM3', 
+              'A_against_FGA3', 'B_against_FGA3', 
+              'A_against_FTA', 'B_against_FTA', 
+              'A_against_OR', 'B_against_OR', 
+              'A_against_Ast', 'B_against_Ast', 
+              'A_against_Stl', 'B_against_Stl', 
+              'A_against_PF', 'B_against_PF', 
+              'A_against_Margin_Eff', 'B_against_Margin_Eff', 
+              'A_against_TO_rate', 'B_against_TO_rate', 
+              'A_against_win_rate', 'B_against_win_rate', 
+              'A_against_Luck', 'B_against_Luck', 
+              'Afix_Luck', 'Bfix_Luck')
   designMatFit <- eloMasseyAPMix %>% 
-    dplyr::select(Afix_win, Afix_Loc, 
-                  Afix_elo, Bfix_elo,
-                  A_for_FGM, B_for_FGM,
-                  A_for_FGM3, B_for_FGM3,
-                  A_for_FGA3, B_for_FGA3,
-                  A_for_Ast, B_for_Ast,
-                  A_for_Stl, B_for_Stl,
-                  A_for_Blk, B_for_Blk,
-                  A_for_PF, B_for_PF,
-                  A_for_Score_Eff, B_for_Score_Eff,
-                  A_for_Margin_Eff, B_for_Margin_Eff,
-                  A_for_OR_rate, B_for_OR_rate,
-                  A_for_win_rate, B_for_win_rate,
-                  A_for_Luck, B_for_Luck,
-                  A_against_FGM, B_against_FGM,
-                  A_against_FGA, B_against_FGA,
-                  A_against_FGM3, B_against_FGM3,
-                  A_against_FGA3, B_against_FGA3,
-                  A_against_FTA, B_against_FTA,
-                  A_against_OR, B_against_OR,
-                  A_against_Ast, B_against_Ast,
-                  A_against_Stl, B_against_Stl,
-                  A_against_PF, B_against_PF,
-                  A_against_Margin_Eff, B_against_Margin_Eff,
-                  A_against_TO_rate, B_against_TO_rate,
-                  A_against_win_rate, B_against_win_rate,
-                  A_against_Luck, B_against_Luck,
-                  Afix_Luck, Bfix_Luck) %>%  
+    dplyr::select(all_of(pkeeps)) %>%   
     model.matrix(object = formula(Afix_win ~ 0 + .)) %>% 
     as.data.frame() %>% 
     mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
@@ -1155,34 +1284,7 @@ if(womens == FALSE) {
   
   # Creating second-order design matrix for model fitting
   designMatFit2 <- eloMasseyAPMix %>% 
-    dplyr::select(Afix_win, Afix_Loc, 
-                  Afix_elo, Bfix_elo,
-                  A_for_FGM, B_for_FGM,
-                  A_for_FGM3, B_for_FGM3,
-                  A_for_FGA3, B_for_FGA3,
-                  A_for_Ast, B_for_Ast,
-                  A_for_Stl, B_for_Stl,
-                  A_for_Blk, B_for_Blk,
-                  A_for_PF, B_for_PF,
-                  A_for_Score_Eff, B_for_Score_Eff,
-                  A_for_Margin_Eff, B_for_Margin_Eff,
-                  A_for_OR_rate, B_for_OR_rate,
-                  A_for_win_rate, B_for_win_rate,
-                  A_for_Luck, B_for_Luck,
-                  A_against_FGM, B_against_FGM,
-                  A_against_FGA, B_against_FGA,
-                  A_against_FGM3, B_against_FGM3,
-                  A_against_FGA3, B_against_FGA3,
-                  A_against_FTA, B_against_FTA,
-                  A_against_OR, B_against_OR,
-                  A_against_Ast, B_against_Ast,
-                  A_against_Stl, B_against_Stl,
-                  A_against_PF, B_against_PF,
-                  A_against_Margin_Eff, B_against_Margin_Eff,
-                  A_against_TO_rate, B_against_TO_rate,
-                  A_against_win_rate, B_against_win_rate,
-                  A_against_Luck, B_against_Luck,
-                  Afix_Luck, Bfix_Luck) %>%  
+    dplyr::select(all_of(pkeeps)) %>%   
     model.matrix(object = formula(Afix_win ~ 0 + .^2)) %>% 
     as.data.frame() %>% 
     mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
@@ -1191,10 +1293,13 @@ if(womens == FALSE) {
 
 # Checking predictor effects across time ----------------------------------
 
+trendCheck <- FALSE
+
+if(trendCheck == TRUE) {
 # Function to obtain size of coefficients for lasso penalized model to plot over time
 predImportance <- function(seasons = 2003, drops = "ratings", modelData = eloMasseyAPMix) {
   
-  nseasons <- length(seasons)
+  n_seasons <- length(seasons)
   
   if(drops == "ratings") {
     modelData <- modelData %>% 
@@ -1234,7 +1339,7 @@ predImportance <- function(seasons = 2003, drops = "ratings", modelData = eloMas
            Pred = case_when(str_sub(Pred, 1, 1) == "_" ~ str_sub(Pred, start = 2, end = -1),
                             TRUE ~ Pred)) %>% 
     group_by(Pred) %>% dplyr::summarize(Size = mean(abs(Coeff))) %>% 
-    ungroup() %>% mutate(Season = ifelse(nseasons == 1, seasons, 
+    ungroup() %>% mutate(Season = ifelse(n_seasons == 1, seasons, 
                                          paste0(min(seasons), "-", max(seasons)))) %>% 
     dplyr::filter(!str_detect(Pred, pattern = "Intercept"))
   
@@ -1340,26 +1445,11 @@ if(womens == FALSE) {
   
   impPlotter(impRes = ratingsImps, seasons = 2010:2022)
 }
+}
 
 # Saving objects for model fitting ----------------------------------------
 
-# # Fitting lasso-penalized model to try & drop more predictors
-# library(glmnet)
-# set.seed(1994)
-# cvModelwin <- cv.glmnet(x = designMatFit, y = eloMasseyAPMix$Afix_win,
-#                      family = "binomial", type.measure = "class",
-#                      nfolds = 10)
-# 
-# cvModelmov <- cv.glmnet(x = designMatFit, y = eloMasseyAPMix$Afix_mov,
-#                         family = "gaussian", type.measure = "mse",
-#                         nfolds = 10)
-# 
-# plot(cvModelwin)
-# plot(cvModelmov)
-# 
-# coef(cvModelwin, s = "lambda.min")
-# coef(cvModelmov, s = "lambda.min")
-
+if(finalFit == FALSE) {
 # Saving for model fitting
 saveRDS(list(Awin = eloMasseyAPMix$Afix_win, 
              MOV = eloMasseyAPMix$Afix_mov, 
@@ -1372,148 +1462,315 @@ saveRDS(list(Awin = eloMasseyAPMix$Afix_win,
              Design = designMatFit2, FullData = eloMasseyAPMix), 
         file = paste0(ifelse(womens, "W_", "M_"), tourneyYear, "_",
                       "designResponseFinal2.rds"))
+}
+
+
+# Just Getting Something in :( --------------------------------------------
+
+# Data for final games
+lastAGames <- eloMasseyAPMix %>% 
+  dplyr::filter(Season == tourneyYear) %>% 
+  arrange(DayNum) %>% 
+  group_by(Afix_TeamID) %>% 
+  slice_tail(n = 1) %>% ungroup()
+
+lastBGames <- eloMasseyAPMix %>% 
+  dplyr::filter(Season == tourneyYear) %>% 
+  arrange(DayNum) %>% 
+  group_by(Bfix_TeamID) %>% 
+  slice_tail(n = 1) %>% ungroup()
+
+# RefA column indicates whether last observed game was as 'Team A' or 'Team B'
+  lastObserved <- lastAGames %>% dplyr::select(GameID, Afix_TeamID) %>% 
+  full_join(lastBGames %>% dplyr::select(GameID, Bfix_TeamID),
+            by = c("Afix_TeamID" = "Bfix_TeamID"),
+            suffix = c("_A", "_B")) %>% 
+  dplyr::mutate(RefA = GameID_A > GameID_B,
+                LastGameID = ifelse(RefA, GameID_A, GameID_B)) %>% 
+  dplyr::rename(TeamID = Afix_TeamID)
+  
+# Function for swapping role of 'Team A' and 'Team B'
+swapAB <- function(bballData) {
+  bballDataMix <- bballData %>% 
+      rename_with(.fn =  ~ str_replace_all(string = .x, c("Afix_" = "Xfix_", "A_" = "X_",
+                                                          "Bfix_" = "Yfix_", "B_" = "Y_")),
+                  .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc"))) %>% 
+      bind_rows(bballData %>% 
+                  mutate(Afix_mov = -Afix_mov, Afix_win = !Afix_win,
+                         Afix_Loc = case_when(Afix_Loc == "A" ~ "H",
+                                              Afix_Loc == "H" ~ "A",
+                                              TRUE ~ Afix_Loc)) %>% 
+                  rename_with(.fn =  ~ str_replace_all(string = .x, c("Bfix_" = "Xfix_", "B_" = "X_",
+                                                                      "Afix_" = "Yfix_", "A_" = "Y_")),
+                              .cols = -any_of(c("Afix_mov", "Afix_win", "Afix_Loc")))) %>% 
+      rename_with(.fn =  ~ str_replace_all(string = .x, c("Xfix_" = "Afix_", "X_" = "A_",
+                                                          "Yfix_" = "Bfix_", "Y_" = "B_")),
+                  .cols = everything())
+  
+  return(bballDataMix)
+}
+
+# Create designMatrix with duplicates by swapping role of Team A & Team B
+eloMasseyAPMixDupe <- eloMasseyAPMix %>% bind_rows(swapAB(eloMasseyAPMix))
+
+designMatFitDupe <- eloMasseyAPMixDupe %>% 
+  dplyr::select(all_of(pkeeps)) %>%   
+  model.matrix(object = formula(Afix_win ~ 0 + .)) %>% 
+  as.data.frame() %>% 
+  mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
+  as.matrix()
+
+# Design matrix columns for Team A and Team B
+dcols <- list(A = which(stringr::str_starts(colnames(designMatFitDupe), pattern = "A")),
+              B = which(stringr::str_starts(colnames(designMatFitDupe), pattern = "B")))
+
+# Function to construct final design matrix
+fetchDesign <- function(myTeamA, myTeamB, lastGameA, lastGameB,
+                        dNames = colnames(designMatFitDupe)) {
+return(c(designMatFitDupe[which(eloMasseyAPMixDupe$Afix_TeamID == myTeamA &
+                         eloMasseyAPMixDupe$GameID == lastGameA)[1], dcols$A],
+designMatFitDupe[which(eloMasseyAPMixDupe$Bfix_TeamID == myTeamB &
+                         eloMasseyAPMixDupe$GameID == lastGameB)[1], dcols$B]))
+}
+
+# File for submission
+submissionFormat <- read_csv(paste0(stageDir, "SampleSubmission", tourneyYear, ".csv"))
+
+myPreds <- submissionFormat %>% tidyr::separate(col = ID, remove = FALSE,
+                                                into = c("Season", "Team1", "Team2"), sep = "_") %>% 
+  dplyr::mutate(Team1 = as.integer(Team1), Team2 = as.integer(Team2)) %>% 
+  left_join(lastObserved %>% dplyr::select(TeamID, LastGameID), by = c("Team1" = "TeamID")) %>% 
+  left_join(lastObserved %>% dplyr::select(TeamID, LastGameID), by = c("Team2" = "TeamID"),
+            suffix = c("1", "2"))
+
+if(file.exists(paste0(tourneyYear, "/finalDesign_", 
+                      ifelse(womens, "W", "M"), ".rds")) == FALSE) {
+designRows <- purrr::pmap(.l = list(myTeamA = myPreds$Team1, myTeamB = myPreds$Team2,
+                                    lastGameA = myPreds$LastGameID1, lastGameB = myPreds$LastGameID2), 
+            .f = fetchDesign) %>% bind_rows()
+
+write_rds(designRows, file = paste0(tourneyYear, "/finalDesign_", 
+                                    ifelse(womens, "W", "M"), ".rds"))
+} else {
+  designRows <- read_rds(paste0(tourneyYear, "/finalDesign_", 
+                  ifelse(womens, "W", "M"), ".rds"))
+}
+
+# Home, Neutral, and Away court values
+awayVal <- min(designMatFitDupe[, "Afix_LocA"])
+homeVal <- min(designMatFitDupe[, "Afix_LocH"])
+neutralVal <- max(designMatFitDupe[, "Afix_LocN"])
+
+designRows2 <- designRows %>% bind_rows() %>% 
+  dplyr::mutate(Afix_LocA = awayVal, Afix_LocH = homeVal, Afix_LocN  = neutralVal) %>% 
+  drop_na() %>% as.matrix()
+
+# Final Predictions -------------------------------------------------------
+
+model <- "MOV"
+
+predsDir <- paste0("/Preds/", model, "/")
+
+# Adding empty tournament games to predict for
+sampleSubmission <- read_csv(paste0(stageDir, "SampleSubmission", tourneyYear, ".csv"))
+
+matchups <- sampleSubmission %>% 
+  mutate(Season = as.integer(map_chr(str_split(ID, pattern = "_"), 1)), 
+         Afix_TeamID = as.integer(map_chr(str_split(ID, pattern = "_"), 2)), 
+         Bfix_TeamID = as.integer(map_chr(str_split(ID, pattern = "_"), 3))) %>% 
+  dplyr::select(-ID, -Pred)
+
+# Read in model fits to make predictions
+myFinalMods <- readRDS(paste0(tourneyYear, "/finalFits_", ifelse(womens, "W", "M"),
+                              "_", model, ".rds"))
+
+designMat <- designRows2
+
+# Function to convert MOV to win probability
+movPreds <- predict(myFinalMods$my.nnet, newdata = designMatFitDupe, type = "raw")
+
+convertFit <- glm(formula = outcome ~ 0 + ., 
+           data = data.frame(outcome = eloMasseyAPMixDupe$Afix_win, 
+  movHat = predict(myFinalMods$my.nnet, newdata = designMatFitDupe, type = "raw")), 
+  family = "binomial")
+
+mov_to_prob <- function(movs, fit = convertFit) {
+  return(predict(fit, newdata = data.frame(movHat = movs), 
+          type = 'response'))
+}
+
+
+# Final tournament preds
+if(model == "Awin") {
+  finalPreds <- tibble(nnet = predict(myFinalMods$my.nnet, newdata = designMat, type = "prob")[, "win"],
+                       glmnet = as.numeric(predict(myFinalMods$cvglmFit, newx = designMat, 
+                                                   s = "lambda.min", type = "response")))
+} else {
+  finalPreds <- tibble(nnet = mov_to_prob(predict(myFinalMods$my.nnet, newdata = designMat, type = "raw")),
+                       glmnet = mov_to_prob(as.numeric(predict(myFinalMods$cvglmFit, newx = designMat, 
+                                                   s = "lambda.min", type = "response"))))
+}
+
+# Saving just mens or just womens file
+write_csv(matchups %>% dplyr::filter(Afix_TeamID %in% lastObserved$TeamID |
+                                     Bfix_TeamID %in% lastObserved$TeamID) %>% 
+            dplyr::mutate(ID = stringr::str_c(Season, "_", Afix_TeamID, "_", Bfix_TeamID),
+                          Pred = finalPreds$nnet) %>% dplyr::select(ID, Pred), 
+          file = paste0(tourneyYear, predsDir, "preds_nnet_", 
+                        ifelse(womens, "W", "M"), "_", model, "_only.csv"))
+
+write_csv(matchups %>% dplyr::filter(Afix_TeamID %in% lastObserved$TeamID |
+                                       Bfix_TeamID %in% lastObserved$TeamID) %>% 
+            dplyr::mutate(ID = stringr::str_c(Season, "_", Afix_TeamID, "_", Bfix_TeamID),
+                          Pred = finalPreds$glmnet) %>% dplyr::select(ID, Pred), 
+          file = paste0(tourneyYear, predsDir, "preds_glmnet_", 
+                        ifelse(womens, "W", "M"), "_", model, "_only.csv"))
+
+# Merging with sample submission
+filledSubmits <- sampleSubmission %>% dplyr::select(-Pred) %>% 
+  left_join(matchups %>% dplyr::filter(Afix_TeamID %in% lastObserved$TeamID |
+                                         Bfix_TeamID %in% lastObserved$TeamID) %>% 
+              dplyr::mutate(ID = stringr::str_c(Season, "_", Afix_TeamID, "_", Bfix_TeamID),
+                            Pred = finalPreds$nnet) %>% dplyr::select(ID, Pred))
+
+
+# Saving files for submission
+finalNnet <- sampleSubmission %>% dplyr::select(-Pred) %>% 
+  left_join(matchups %>% dplyr::filter(Afix_TeamID %in% lastObserved$TeamID |
+                                         Bfix_TeamID %in% lastObserved$TeamID) %>% 
+              dplyr::mutate(ID = stringr::str_c(Season, "_", Afix_TeamID, "_", Bfix_TeamID),
+                            Pred = finalPreds$nnet) %>% dplyr::select(ID, Pred))
+
+write_csv(finalNnet, 
+          file = paste0(tourneyYear, predsDir, "preds_nnet_", 
+                        ifelse(womens, "W", "M"), "_", model, "_",
+                        "partial", ".csv"))
+
+finalGlmnet <- sampleSubmission %>% dplyr::select(-Pred) %>% 
+  left_join(matchups %>% dplyr::filter(Afix_TeamID %in% lastObserved$TeamID |
+                                         Bfix_TeamID %in% lastObserved$TeamID) %>% 
+              dplyr::mutate(ID = stringr::str_c(Season, "_", Afix_TeamID, "_", Bfix_TeamID),
+                            Pred = finalPreds$glmnet) %>% dplyr::select(ID, Pred))
+
+write_csv(finalGlmnet, 
+          file = paste0(tourneyYear, predsDir, "preds_glmnet_", 
+                        ifelse(womens, "W", "M"), "_", model, "_",
+                        "partial", ".csv"))
+
+
+# Combining mens and womens predictions for final submission
+mensPReds <- read_csv(paste0(tourneyYear, predsDir, "preds_nnet_", "M", "_", 
+                             model, "_partial", ".csv")) %>% drop_na()
+
+womensPReds <- read_csv(paste0(tourneyYear, predsDir, "preds_nnet_", "W", "_", 
+                             model, "_partial", ".csv")) %>% drop_na()
+
+
+write_csv(bind_rows(mensPReds, womensPReds), 
+          file = paste0(tourneyYear, "/Preds/preds_nnet_", "MW", "_", 
+                        model, "_final", ".csv"))
+
+
+
+
+
+
 
 # Data for Tournament Predictions -----------------------------------------
+  
+  # Data for final games
+  lastAGames <- eloMasseyAPMix %>% 
+    dplyr::filter(Season == tourneyYear) %>% 
+    arrange(DayNum) %>% 
+    group_by(Afix_TeamID) %>% 
+    slice_tail(n = 1) %>% ungroup()
+  
+  lastBGames <- eloMasseyAPMix %>% 
+    dplyr::filter(Season == tourneyYear) %>% 
+    arrange(DayNum) %>% 
+    group_by(Bfix_TeamID) %>% 
+    slice_tail(n = 1) %>% ungroup()
+  
+  lastGames <- bind_rows(lastAGames, lastBGames) %>% dplyr::distinct()
+  
+  # Updating ELOs based on result of final games
+  nteams <- length(eloRes$newElos$team)
+  for(team in 1:nteams) {
+    lastGames[which(lastGames$Afix_TeamID == eloRes$newElos$team[team]), "Afix_elo"] <- eloRes$newElos$elo[team]
+    lastGames[which(lastGames$Bfix_TeamID == eloRes$newElos$team[team]), "Bfix_elo"] <- eloRes$newElos$elo[team]
+  }
+  
+  # Dropping final games with unupdated ELOs and replacing with updated ELO data
+  eloMasseyAPMixFinal <- eloMasseyAPMix %>% 
+    dplyr::filter(!(GameID %in% c(lastGames$GameID))) %>% 
+    bind_rows(lastGames)
+  
+  # Indices of final games 
+  finalInds <- which(eloMasseyAPMixFinal$GameID %in% lastGames$GameID)
+  
+  # Creating final first-order design matrix for model fitting
+  designMatFitFinal <- eloMasseyAPMixFinal %>% 
+    dplyr::select(all_of(pkeeps)) %>%  
+    model.matrix(object = formula(Afix_win ~ 0 + .)) %>% 
+    as.data.frame() %>% 
+    mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
+    as.matrix()
+  
+  # Extracting rows for final predictions
+  finalTeamGames <- map_dfr(.x = c("A", "B"), .f = function(refTeam) {
+    lastGames %>% 
+    dplyr::select(Season:GameID, starts_with(refTeam, ignore.case = FALSE)) %>% 
+    dplyr::select(Season:GameID, ends_with("fix_TeamID"), any_of(pkeeps)) %>% 
+    rename_with(.fn =  ~ str_sub(.x, start = 2, end = -1), .cols = starts_with(refTeam, ignore.case = FALSE)) %>% 
+      dplyr::mutate(Reference = refTeam)
+  }) %>% 
+    arrange(desc(DayNum)) %>% 
+    group_by(fix_TeamID, .drop = FALSE) %>% 
+    slice_head(n = 1) %>% ungroup() %>% 
+    dplyr::select(GameID, fix_TeamID, Reference)
+    
+  # Indices for rows to keep from design matrix
+  dIndices <- map_int(1:nrow(finalTeamGames), .f = function(g) {
+    which(eloMasseyAPMixFinal$GameID == finalTeamGames$GameID[g] &
+          (eloMasseyAPMixFinal$Afix_TeamID == finalTeamGames$fix_TeamID[g] |
+           eloMasseyAPMixFinal$Bfix_TeamID == finalTeamGames$fix_TeamID[g]))
+  })
+  
+  # Including design matrix indices
+  finalTeamGamesFull <- finalTeamGames %>% dplyr::mutate(emapRow = dIndices)
+  
+  # Design matrix columns for Team A and Team B
+  dcols <- list(A = which(stringr::str_starts(colnames(designMatFitFinal), pattern = "A") &
+                            !(colnames(designMatFitFinal) %in% c("Afix_LocA", "Afix_LocH", "Afix_LocN"))),
+                B = which(stringr::str_starts(colnames(designMatFitFinal), pattern = "B")))
+  
+  # All relevant matchups (excluding womens for mens and vice versa)
+  fullMatchups <- matchups %>% 
+    left_join(finalTeamGamesFull, by = c("Afix_TeamID" = "fix_TeamID")) %>% 
+    left_join(finalTeamGamesFull, by = c("Bfix_TeamID" = "fix_TeamID"), suffix = c("_A", "_B")) %>% 
+    dplyr::filter(!is.na(GameID_A))
+  
+  # Home, Neutral, and Away court values
+  awayVal <- min(designMatFitFinal[, "Afix_LocA"])
+  homeVal <- min(designMatFitFinal[, "Afix_LocH"])
+  neutralVal <- max(designMatFitFinal[, "Afix_LocN"])
+  
+  # Design matrix without location
+  fullDesign <- matrix(unlist(purrr::map(.x = 1:nrow(fullMatchups),
+                         .f = function(x) {
+                           c(designMatFitFinal[fullMatchups$emapRow_A[x], dcols[[fullMatchups$Reference_A[x]]]],
+                             designMatFitFinal[fullMatchups$emapRow_B[x], dcols[[fullMatchups$Reference_B[x]]]])
+                           })), byrow = TRUE, ncol = length(dcols[[1]])*2)
+  
+  # Adding location columns
+  fullDesign <- cbind(matrix(rep(c(awayVal, homeVal, neutralVal), times = nrow(fullDesign)),
+         byrow = TRUE, nrow = nrow(fullDesign)),
+         fullDesign)
+  
+  colnames(fullDesign) <- c("Afix_LocA", "Afix_LocH", "Afix_LocN",
+                            sort(pkeeps[-c(1:2)]))
+  
+  # Rearranging columns properly
+  fullDesign <- fullDesign[, colnames(designMatFitFinal)]
 
-  # Adding empty tournament games to predict for
-  matchups <- read_csv(paste0(stageDir, "SampleSubmission", tourneyYear, ".csv")) %>% 
-    mutate(Season = as.integer(map_chr(str_split(ID, pattern = "_"), 1)), 
-           Afix_TeamID = as.integer(map_chr(str_split(ID, pattern = "_"), 2)), 
-           Bfix_TeamID = as.integer(map_chr(str_split(ID, pattern = "_"), 3))) %>% 
-    dplyr::select(-ID, -Pred)
-  
-  tourneyTeams <- unique(c(matchups$Afix_TeamID, matchups$Bfix_TeamID))
-  
-  # Data on last games of season for each team
-  fullEloLast <- bind_rows(fullElo1, fullElo2) %>% filter(Season == tourneyYear) %>% 
-    arrange(DayNum) %>% group_by(Afix_TeamID) %>% mutate(Afix_count = 1:n()) %>% 
-    slice_tail(n = 1) %>% ungroup() %>% dplyr::select(-starts_with("Bfix_")) %>% 
-    rename_with(.fn =  ~ gsub("A_", "A_for_", .x,
-                              fixed = TRUE), .cols = starts_with("A_")) %>% 
-    rename_with(.fn =  ~ gsub("B_", "A_against_", .x,
-                              fixed = TRUE), .cols = starts_with("B_")) %>% 
-    filter(Afix_TeamID %in% tourneyTeams) %>% dplyr::select(-Afix_elo) %>% 
-    left_join(newElos %>% rename(Afix_TeamID = team, Afix_elo = elo))
-  
-  # Data on 2nd to last game of season
-  wideEloLast <- wideElo %>% filter(Season == tourneyYear) %>% arrange(DayNum) %>% 
-    group_by(Afix_TeamID) %>% slice_tail(n = 1) %>% ungroup() %>% 
-    dplyr::select(colnames(fullEloLast)) %>% filter(Afix_TeamID %in% tourneyTeams)
-  
-  # Final tourney stats for each team except massey ordinals & AP pre-ranks
-  tourneyStats <- map_dfr(.x = tourneyTeams, .f = function(tteam) {
-    lastGame <- fullEloLast %>% filter(Afix_TeamID == tteam) %>% 
-      mutate(across(starts_with("A_"), ~ .x*1/Afix_count))
-    
-    nGames <- lastGame$Afix_count
-    
-    finalStats <- wideEloLast %>% filter(Afix_TeamID == tteam) %>% 
-      mutate(across(starts_with("A_"),  ~ .x*(nGames-1)/nGames)) %>% 
-      bind_rows(lastGame) %>% mutate(across(starts_with("A_"),  ~ sum(.x))) %>% 
-      tail(1)
-    
-    return(finalStats)
-  }) %>% dplyr::select(-GameID, -Afix_mov, -Afix_win, -Afix_count)
-  
-  # Added last Massey ratings before tournament & preSeason AP ranks for Men's games
-  if(womens == FALSE) {
-    tourneyMasseyStats <- tourneyStats %>% left_join(masseyImpute %>% 
-                                                       filter(Season == tourneyYear) %>% arrange(DayNum) %>% group_by(TeamID) %>%
-                                                       slice_tail(n = 1) %>% ungroup() %>% dplyr::select(-DayNum) %>% 
-                                                       rename_with(.fn =  ~ paste0("Afix_", .x), .cols = -Season)) %>% 
-      left_join(eloMasseyAPMix %>% filter(Season == tourneyYear, Afix_TeamID %in% tourneyTeams) %>% 
-                  group_by(Afix_TeamID) %>% slice(1) %>% ungroup() %>% dplyr::select(Afix_TeamID, Afix_AP)) %>% 
-      left_join(eloMasseyAPMix %>% filter(Season == tourneyYear, Bfix_TeamID %in% tourneyTeams) %>% 
-                  group_by(Bfix_TeamID) %>% slice(1) %>% ungroup() %>% dplyr::select(Bfix_TeamID, Bfix_AP) %>% 
-                  rename(Afix_TeamID = Bfix_TeamID, Afix_AP = Bfix_AP)) %>% 
-      mutate(Afix_Loc = rep("N", times = 68)) %>% dplyr::select(-DayNum)
-  } else {
-    tourneyMasseyStats <- tourneyStats %>% 
-      mutate(Afix_Loc = rep("N", times = 68)) %>% dplyr::select(-DayNum)
-  }
-  
-  # Stats for all combinations of matchups
-  allTourney <- expand_grid(Afix_TeamID = tourneyTeams, Bfix_TeamID = tourneyTeams) %>% 
-    left_join(tourneyMasseyStats) %>% left_join(tourneyMasseyStats %>% 
-                                                  rename_with(.fn =  ~ gsub("Afix_", "Bfix_", gsub("A_", "B_", .x,
-                                                                                                   fixed = TRUE), fixed = TRUE),
-                                                              .cols = starts_with(c("A_", "Afix_")))) %>% 
-    mutate(Afix_win = FALSE) %>% dplyr::select(Season, Afix_TeamID,
-                                               Bfix_TeamID, colnames(eloMasseyAPMix %>% dplyr::select(-Afix_count, -Bfix_count,
-                                                                                                      -Season, -DayNum, -GameID, -Afix_TeamID,
-                                                                                                      -Bfix_TeamID, -Afix_Conference,
-                                                                                                      -Bfix_Conference, -Afix_mov)))
-  
-  if(womens == FALSE) {
-    # First-order design matrix
-    firstPreds <- str_split(str_squish("Afix_win, Afix_Loc, 
-                A_for_Ast, B_for_Ast, A_against_Ast, B_against_Ast,
-                A_for_OR, B_for_OR, A_against_OR, B_against_OR, 
-                A_against_FGA, B_against_FGA,
-                A_for_Blk, B_for_Blk, 
-                A_for_Stl, B_for_Stl,
-                A_for_Score, B_for_Score,
-                Afix_AP, Bfix_AP, Afix_elo, Bfix_elo,
-                Afix_Moore, Bfix_Moore, Afix_Pomeroy, Bfix_Pomeroy,
-                Afix_Sagarin, Bfix_Sagarin, 
-                A_for_TO, B_for_TO,
-                A_against_FTA, B_against_FTA, 
-                A_against_DR, B_against_DR"), pattern = ",")[[1]]
-    designTourney <- eloMasseyAPMix %>% ungroup() %>% dplyr::select(firstPreds) %>% 
-      bind_rows(allTourney %>% dplyr::select(firstPreds)) %>% 
-      model.matrix(object = formula(Afix_win ~ 0 + .)) %>% 
-      as.data.frame() %>% mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
-      slice_tail(n = nrow(allTourney)) %>% as.matrix()
-    
-    # Second-order design matrix
-    secondPreds <- str_split(str_squish("Afix_win, Afix_Loc, 
-                                                              A_for_Ast, B_for_Ast, A_against_Ast, B_against_Ast,
-                                                              A_for_OR, B_for_OR, A_against_OR, B_against_OR, 
-                                                              A_against_FGA, B_against_FGA,
-                                                              A_for_Blk, B_for_Blk, 
-                                                              A_for_Stl, B_for_Stl,
-                                                              A_for_Score, B_for_Score,
-                                                              Afix_AP, Bfix_AP, Afix_elo, Bfix_elo,
-                                                              Afix_Moore, Bfix_Moore, Afix_Pomeroy, Bfix_Pomeroy,
-                                                              Afix_Sagarin, Bfix_Sagarin, 
-                                                              A_for_TO, B_for_TO,
-                                                              A_against_FTA, B_against_FTA, 
-                                                              A_against_DR, B_against_DR"), pattern = ",")[[1]]
-    designTourney2 <- eloMasseyAPMix %>% ungroup() %>% dplyr::select(secondPreds) %>% 
-      bind_rows(allTourney %>% dplyr::select(secondPreds)) %>% 
-      model.matrix(object = formula(Afix_win ~ 0 + .^2)) %>% 
-      as.data.frame() %>% mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
-      slice_tail(n = nrow(allTourney)) %>% as.matrix()
-  } else {
-    # First-order design matrix
-    designTourney <- eloMasseyAPMix %>% ungroup() %>% 
-      dplyr::select(Afix_win, Afix_Loc, Afix_elo,
-                    Bfix_elo, A_for_Score:B_against_Poss, 
-                    -contains(c("against_FTM", "against_Score", "against_Poss",
-                                "for_FTA", "for_OR", "for_DR", "for_FGA"))) %>% 
-      bind_rows(allTourney %>% dplyr::select(Afix_win, Afix_Loc, Afix_elo,
-                                             Bfix_elo, A_for_Score:B_against_Poss, 
-                                             -contains(c("against_FTM", "against_Score", "against_Poss",
-                                                         "for_FTA", "for_OR", "for_DR", "for_FGA")))) %>% 
-      model.matrix(object = formula(Afix_win ~ 0 + .)) %>% 
-      as.data.frame() %>% mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
-      slice_tail(n = nrow(allTourney)) %>% as.matrix()
-    
-    # Second-order design matrix
-    designTourney2 <- eloMasseyAPMix %>% ungroup() %>% dplyr::select(Afix_win, Afix_Loc, Afix_elo,
-                                                                     Bfix_elo, A_for_Score:B_against_Poss, 
-                                                                     -contains(c("against_FTM", "against_Score", "against_Poss",
-                                                                                 "for_FTA", "for_OR", "for_DR", "for_FGA"))) %>% 
-      bind_rows(allTourney %>% dplyr::select(Afix_win, Afix_Loc, Afix_elo,
-                                             Bfix_elo, A_for_Score:B_against_Poss, 
-                                             -contains(c("against_FTM", "against_Score", "against_Poss",
-                                                         "for_FTA", "for_OR", "for_DR", "for_FGA")))) %>% 
-      model.matrix(object = formula(Afix_win ~ 0 + .^2)) %>% 
-      as.data.frame() %>% mutate(across(.cols = everything(), .fns = scale, center = TRUE, scale = TRUE)) %>% 
-      slice_tail(n = nrow(allTourney)) %>% as.matrix()
-  }
-  
-  # Saving objects for final predictions
-  saveRDS(list(allTourney = allTourney, designTourney = designTourney,
-               designTourney2 = designTourney2), paste0(tourneyYear, ifelse(womens, "-Womens", ""),
-                                                        "/finalPredObjects.rds"))
+ 
