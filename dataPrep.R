@@ -110,7 +110,7 @@ fullRaw2 <- fullRaw %>%
                             fixed = TRUE), .cols = c(B_TeamID, B_Loc, B_Conference)) %>% 
   arrange(GameID)
 
-# Adding in games played for each team to facilitate decay in ELO
+# Adding in games played for each team to facilitate decay in ELO & AP preseason ranks
 game_counts <- bind_rows(fullRaw1, fullRaw2) %>% 
   group_by(Season, Afix_TeamID) %>% 
   dplyr::arrange(DayNum) %>% 
@@ -411,7 +411,8 @@ if(finalFit == TRUE) {
     dplyr::filter(Season == tourneyYear) %>% 
     arrange(desc(DayNum)) %>% 
     group_by(Afix_TeamID) %>% 
-    slice_head(n = 1) %>% ungroup() %>% 
+    slice_head(n = 1) %>% 
+    ungroup() %>% 
     dplyr::select(-Afix_elo, -Bfix_elo) %>% 
     dplyr::filter(Season == tourneyYear) %>% 
     left_join(eloRes$newElos, by = c("Afix_TeamID" = "team")) %>% 
@@ -461,7 +462,8 @@ if(finalFit == FALSE) {
 } 
 
 # Add game count for Team B
-longElo <- longElo %>% ungroup() %>% 
+longElo <- longElo %>% 
+  ungroup() %>% 
   group_by(Season, Bfix_TeamID) %>% 
   dplyr::mutate(Bfix_count = row_number()) %>% 
   ungroup()
@@ -1047,7 +1049,7 @@ if(womens == FALSE) {
              data = eloMasseyMix))
 }
 
-# Adding in pre-season AP rank --------------------------------------------
+# Adding in pre-season AP rank / previous season-ending ELO  --------------------------------------------
   
   # Previous season's ending elo values
   elo_starts <- wideElo %>% 
@@ -1549,8 +1551,10 @@ lastBGames <- eloMasseyAPMix %>%
   slice_tail(n = 1) %>% ungroup()
 
 # RefA column indicates whether last observed game was as 'Team A' or 'Team B'
-  lastObserved <- lastAGames %>% dplyr::select(GameID, Afix_TeamID) %>% 
-  full_join(lastBGames %>% dplyr::select(GameID, Bfix_TeamID),
+  lastObserved <- lastAGames %>% 
+    dplyr::select(GameID, Afix_TeamID) %>% 
+  full_join(lastBGames %>% 
+              dplyr::select(GameID, Bfix_TeamID),
             by = c("Afix_TeamID" = "Bfix_TeamID"),
             suffix = c("_A", "_B")) %>% 
   dplyr::mutate(RefA = GameID_A > GameID_B,
