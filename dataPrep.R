@@ -21,7 +21,7 @@ t1 <- Sys.time()
 # womens: whether to create modelling data for Men's (womens = FALSE) or Womens Tourney (womens = TRUE)
 # tourneyYear: year of tournament to forecast
 # finalFit: creating design matrix for final tournament predictions (TRUE) or not (FALSE)
-womens <- FALSE
+womens <- TRUE
 tourneyYear <- 2023
 finalFit <- FALSE
 
@@ -1048,47 +1048,95 @@ if(womens == FALSE) {
 }
 
 # Adding in pre-season AP rank --------------------------------------------
-
-# Consider exponential decay of weight of AP rank based on inverse of number of games played, e.g. f(x) = 5  + 0.5*exp(-0.1 * x)
-
-if(womens == FALSE) {
-  # Preseason poll data from sports-reference: https://www.sports-reference.com/cbb/seasons/2003-polls.html
-  #                                          : https://www.sports-reference.com/cbb/seasons/women/2010-polls.html
-  # AP rankings from Kaggle did not seem to have preseason AP rankings for teams
-  apPres <- list.files(paste0("AP/", ifelse(womens, "womens/", "mens/"))) %>% 
-    str_subset(pattern = "csv") %>% 
-    map_dfr(.f = function(myFile) {
-    season <- str_sub(str_split(myFile, pattern = "-")[[1]][2], start = 1, end = 4)
-    ret <- read_csv(paste0("AP/", ifelse(womens, "womens/", "mens/"), myFile), 
-                    skip = 2, show_col_types = FALSE) %>% 
-      dplyr::select(School, Pre) %>% 
-      drop_na() %>% 
-      mutate(Season = as.numeric(season))
-  }) %>% 
-    dplyr::mutate(TeamNameSpelling = tolower(School)) %>% 
-    left_join(read_csv(paste0(stageDir, ifelse(womens, "W", "M"), "TeamSpellings.csv"))) %>% 
-    dplyr::rename(AP = Pre) %>% 
-    dplyr::select(Season, TeamID, AP)
   
-  # Imputing initial AP ranks using previous season's ending elo & other info
-  old_elo_pyth <- wideElo %>% 
+  # Previous season's ending elo values
+  elo_starts <- wideElo %>% 
     group_by(Season, Afix_TeamID) %>%
     slice_max(DayNum, n = 1) %>% 
     ungroup() %>% 
     dplyr::select(Season, DayNum, Afix_TeamID, Afix_elo) |> 
-    dplyr::rename(TeamID = Afix_TeamID, elo = Afix_elo) |> 
+    dplyr::rename(TeamID = Afix_TeamID, elo_start = Afix_elo) |> 
     bind_rows(wideElo %>% 
                 group_by(Season, Bfix_TeamID) %>%
                 slice_max(DayNum, n = 1) %>% 
                 ungroup() %>% 
                 dplyr::select(Season, DayNum, Bfix_TeamID, Bfix_elo) |> 
-                dplyr::rename(TeamID = Bfix_TeamID, elo = Bfix_elo)) |> 
+                dplyr::rename(TeamID = Bfix_TeamID, elo_start = Bfix_elo)) |> 
     group_by(Season, TeamID) |> 
     slice_max(DayNum, n = 1, with_ties = FALSE) |> 
     ungroup() |> 
     dplyr::mutate(Season = Season + 1) |> 
-    dplyr::select(-DayNum) 
+    dplyr::select(-DayNum)
   
+  # Logistic-based function for smoothing across season
+  # decay_rate: Steepness of inverse logit function for weights
+  # converge_point: controls the lower asymptote of the inverse logit function
+  logistic_decay <- function(x, decay_rate = 0.1, converge_point = 0.3, mid_point = 0) {
+    x <- x - 20
+    (exp(-decay_rate*(x - mid_point)) / (1 + exp(-decay_rate*(x - mid_point))) + converge_point) / (1 + converge_point)
+  }
+  
+  if(womens) {
+    eloMassey <- wideElo
+  }
+  
+  # Adding into full data: wideElo
+  eloMasseyAP <- eloMassey %>% 
+    left_join(elo_starts, by = c("Season" = "Season",  "Afix_TeamID" = "TeamID")) %>% 
+    left_join(elo_starts, by = c("Season" = "Season",  "Bfix_TeamID" = "TeamID")) %>% 
+    dplyr::rename(Afix_eloStart = elo_start.x, 
+                  Bfix_eloStart = elo_start.y) |> 
+    dplyr::mutate(Afix_eloStart = logistic_decay(x = Afix_count,
+                                                      decay_rate = 0.04, converge_point = 0.19, mid_point = 0) * Afix_eloStart,
+                  Bfix_eloStart = logistic_decay(x = Bfix_count,
+                                                      decay_rate = 0.04, converge_point = 0.19, mid_point = 0) * Bfix_eloStart)
+  
+  # Optimizing parameters for logistic_decay function for ELO starts
+  if(FALSE) {
+  # Simulation function to select optimal decay
+  elo_decay_sim <- function(param) {
+    return(summary(lm(Afix_mov ~ Afix_eloStartdecay + Bfix_eloStartdecay, data = eloMassey %>% 
+      left_join(elo_starts, by = c("Season" = "Season",  "Afix_TeamID" = "TeamID")) %>% 
+      left_join(elo_starts, by = c("Season" = "Season",  "Bfix_TeamID" = "TeamID")) %>% 
+      dplyr::rename(Afix_eloStart = elo_start.x, 
+                    Bfix_eloStart = elo_start.y) |> 
+      dplyr::mutate(Afix_eloStartdecay = logistic_decay(x = Afix_count,
+                                                        decay_rate = 0.04, converge_point = 0.19, mid_point = 0) * Afix_eloStart,
+                    Bfix_eloStartdecay = logistic_decay(x = Bfix_count,
+                                                        decay_rate = 0.04, converge_point = 0.19, mid_point = 0) * Bfix_eloStart)))$r.squared)
+  }
+  
+  cand_params <- seq(0.02, 0.5, by = 0.02)
+  decay_gg <- tibble(R2 = map_dbl(.f = elo_decay_sim, .x = cand_params),
+                     Param = cand_params)
+  
+  # Visualizing performance of decay values
+  decay_gg |> 
+    ggplot(aes(x = Param, y = R2)) +
+    geom_line() +
+    geom_point() +
+    ggthemes::theme_few()
+  }
+  
+  if(womens == FALSE) {
+    # Preseason poll data from sports-reference: https://www.sports-reference.com/cbb/seasons/2003-polls.html
+    #                                          : https://www.sports-reference.com/cbb/seasons/women/2010-polls.html
+    # AP rankings from Kaggle did not seem to have preseason AP rankings for teams
+    apPres <- list.files(paste0("AP/", ifelse(womens, "womens/", "mens/"))) %>% 
+      str_subset(pattern = "csv") %>% 
+      map_dfr(.f = function(myFile) {
+        season <- str_sub(str_split(myFile, pattern = "-")[[1]][2], start = 1, end = 4)
+        ret <- read_csv(paste0("AP/", ifelse(womens, "womens/", "mens/"), myFile), 
+                        skip = 2, show_col_types = FALSE) %>% 
+          dplyr::select(School, Pre) %>% 
+          drop_na() %>% 
+          mutate(Season = as.numeric(season))
+      }) %>% 
+      dplyr::mutate(TeamNameSpelling = tolower(School)) %>% 
+      left_join(read_csv(paste0(stageDir, ifelse(womens, "W", "M"), "TeamSpellings.csv"))) %>% 
+      dplyr::rename(AP = Pre) %>% 
+      dplyr::select(Season, TeamID, AP)
+    
   # Imputing initial AP ranks using Massey ordinals
   apMiss <- masseyImpute %>% 
     dplyr::arrange(Season, DayNum) %>% 
@@ -1103,31 +1151,45 @@ if(womens == FALSE) {
                           TRUE ~ AP)) %>% 
     dplyr::select(Season, TeamID, AP)
   
-  |> 
-    left_join(apPres)
-  
-  # Estimating relationship between elo and AP preseason rank
-  ap_elo_pyth_mod <- lm(AP ~ elo, data = old_elo_pyth)
-  
-  %>% 
-    group_by(Season) %>% 
-    dplyr::mutate(AggRank = rank(Pomeroy + Moore + Sagarin)) %>% 
-    ungroup() %>% 
-    dplyr::mutate(AP = case_when(is.na(AP) ~ AggRank, 
-                                 TRUE ~ AP)) %>% 
-    dplyr::select(Season, TeamID, AP) 
-  
   # Adding into full data
-  eloMasseyAP <- eloMassey %>% 
+  eloMasseyAP <- eloMasseyAP %>% 
     left_join(apMiss, by = c("Season" = "Season",  "Afix_TeamID" = "TeamID")) %>% 
     left_join(apMiss, by = c("Season" = "Season",  "Bfix_TeamID" = "TeamID")) %>% 
-    dplyr::rename(Afix_AP = AP.x, Bfix_AP = AP.y)
+    dplyr::rename(Afix_AP = AP.x, Bfix_AP = AP.y) |> 
+    dplyr::mutate(Afix_AP = logistic_decay(x = Afix_count,
+                                                decay_rate = 0.1, converge_point = 0.3, mid_point = 0) * Afix_AP,
+                  Bfix_AP = logistic_decay(x = Bfix_count,
+                                                decay_rate = 0.1, converge_point = 0.3, mid_point = 0) * Bfix_AP)
+  }
+  
+  # Optimizing parameters for logistic_decay function for AP preseason ranks
+  if(FALSE) {
+    # Simulation function to select optimal decay
+    ap_decay_sim <- function(param) {
+      return(summary(lm(Afix_mov ~ Afix_APdecay + Bfix_APdecay, data = eloMasseyAP %>% 
+                          left_join(apMiss, by = c("Season" = "Season",  "Afix_TeamID" = "TeamID")) %>% 
+                          left_join(apMiss, by = c("Season" = "Season",  "Bfix_TeamID" = "TeamID")) %>% 
+                          dplyr::rename(Afix_AP = AP.x, Bfix_AP = AP.y) |> 
+                          dplyr::mutate(Afix_APdecay = logistic_decay(x = Afix_count,
+                                                                      decay_rate = 0.1, converge_point = param, mid_point = 0) * Afix_AP,
+                                        Bfix_APdecay = logistic_decay(x = Bfix_count,
+                                                                      decay_rate = 0.1, converge_point = param, mid_point = 0) * Bfix_AP)))$r.squared)
+    }
+    
+    cand_params <- seq(0.05, 1.5, by = 0.05)
+    decay_gg <- tibble(R2 = map_dbl(.f = ap_decay_sim, .x = cand_params),
+                       Parameter = cand_params)
+    
+    # Visualizing performance of decay values
+    decay_gg |> 
+      ggplot(aes(x = Parameter, y = R2)) +
+      geom_line() +
+      geom_point() +
+      ggthemes::theme_few()
+  }
   
   # Creating myopic data set from team A's perspective as winner always
   myopicData <- eloMasseyAP
-} else {
-  myopicData <- wideElo
-}
 
 # Randomly selecting some games to have Team A lose
 eloMasseyAPMix <- myopicData %>% 
@@ -1161,10 +1223,14 @@ summary(lm(Afix_mov ~ Afix_elo + Bfix_elo,
 
 # Sanity check for data leakage or other issues using cv.glmnet
 
-# Truncating data
+# Truncating data & dropping those with missing elo starts.
+# Missing elo starts I believe are new teams and tend to be very bad teams, so
+# are not likely good for training for tournament games anyways
 yearCutOff <- 2010
 eloMasseyAPMix <- eloMasseyAPMix %>% 
-  dplyr::filter(Season >= yearCutOff)
+  dplyr::filter(Season >= yearCutOff,
+                !is.na(Afix_eloStart),
+                !is.na(Bfix_eloStart))
 
 # Creating design matrix
 designMat <- eloMasseyAPMix %>% 
@@ -1194,9 +1260,11 @@ coef(cvModel, s = "lambda.min")
 fitRes <- data.frame(Predictor = coef(cvModel, s = "lambda.min") %>%
                        as.matrix() %>% as.data.frame() %>% rownames(),
                      Value = coef(cvModel, s = "lambda.min") %>% as.matrix() %>%
-                       as.data.frame() %>% unlist()) %>% filter(abs(Value) > 0.00001)
+                       as.data.frame() %>% unlist()) %>% 
+  dplyr::filter(abs(Value) > 0.00001)
 
-preds <- fitRes %>% pull(Predictor) %>%
+preds <- fitRes %>% 
+  dplyr::pull(Predictor) %>%
   str_split(pattern = "A_|B_|Afix|Bfix") %>% unlist() %>%
   trimws(whitespace = "_") %>% table() %>% as.data.frame() %>%
   arrange(desc(Freq)) %>% filter(`.` != "")
