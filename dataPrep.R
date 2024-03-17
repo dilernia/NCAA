@@ -19,14 +19,14 @@ t1 <- Sys.time()
 
 # Script parameters: 
 # womens: whether to create modelling data for Men's (womens = FALSE) or Womens Tourney (womens = TRUE)
-# tourneyYear: year of tournament to forecast
+# tourney_year: year of tournament to forecast
 # finalFit: creating design matrix for final tournament predictions (TRUE) or not (FALSE)
-womens <- TRUE
-tourneyYear <- 2024
+womens <- FALSE
+tourney_year <- 2024
 finalFit <- FALSE
 
 # Setting file paths
-stageDir <- paste0(tourneyYear, "/march-machine-learning-mania-", tourneyYear, "/")
+stageDir <- paste0(tourney_year, "/march-machine-learning-mania-", tourney_year, "/")
 
 # Importing & Cleaning Box Score Data -------------------------------------
 
@@ -401,8 +401,8 @@ if(runSim == TRUE) {
   eloSimRes <- future_pmap_dfr(.l = params, .f = elo_sim, .progress = TRUE)
   
   # Saving results
-  saveRDS(eloSimRes, paste0(tourneyYear, ifelse(womens, "-Womens/", "/"), "eloSimRes.rds"))
-  eloSimRes <- readRDS(paste0(tourneyYear, ifelse(womens, "-Womens/", "/"), "eloSimRes.rds"))
+  saveRDS(eloSimRes, paste0(tourney_year, ifelse(womens, "-Womens/", "/"), "eloSimRes.rds"))
+  eloSimRes <- readRDS(paste0(tourney_year, ifelse(womens, "-Womens/", "/"), "eloSimRes.rds"))
   
   # Plotting results
   eloSimRes |> pivot_longer(cols = r2:logisticAICNew, values_to = "Value",
@@ -513,7 +513,7 @@ n_games <- long_ELO_final |>
 
 # Make last game ELO values equal to most recent ELO value for final season if final fit
 long_ELO_final <- long_ELO_final |> 
-    dplyr::filter(Season == tourneyYear) |> 
+    dplyr::filter(Season == tourney_year) |> 
     group_by(Afix_TeamID) |> 
     slice_max(DayNum, n = 1) |> 
     ungroup() |> 
@@ -529,9 +529,9 @@ long_ELO_final <- long_ELO_final |>
     dplyr::select(Season:GameID, Afix_TeamID, Bfix_TeamID, Afix_elo_final, Bfix_elo_final, last_day_A, last_day_B) |> 
   right_join(long_ELO_final, 
              by = c('Season', 'DayNum', 'GameID', 'Afix_TeamID', 'Bfix_TeamID')) |> 
-  dplyr::mutate(Afix_elo = case_when(Season == tourneyYear & DayNum == last_day_A ~ Afix_elo_final,
+  dplyr::mutate(Afix_elo = case_when(Season == tourney_year & DayNum == last_day_A ~ Afix_elo_final,
                                      TRUE ~ Afix_elo),
-                Bfix_elo = case_when(Season == tourneyYear & DayNum == last_day_B ~ Bfix_elo_final,
+                Bfix_elo = case_when(Season == tourney_year & DayNum == last_day_B ~ Bfix_elo_final,
                                      TRUE ~ Bfix_elo)) |> 
   dplyr::select(-Afix_elo_final, -Bfix_elo_final, -last_day_A, -last_day_B)
 
@@ -1387,12 +1387,18 @@ summary(lm(Afix_mov ~ Afix_elo + Bfix_elo,
 # are not likely good for training for tournament games anyways
 
 # Function to create design matrix and response vector
-make_design_response <- function(massey_data, season_cutoff = 2010, preds = "all", remove_nas = TRUE, model = "first-order") {
+make_design_response <- function(massey_data, season_cutoff = 2010, preds = "all", 
+                                 remove_nas = TRUE, model = "first-order") {
+  
+  ret <- list()
   
   if(remove_nas) {
     massey_data <- drop_na(massey_data) |> 
       dplyr::filter(Season >= season_cutoff)
   }
+  
+  ret$response_Awin <- massey_data$Afix_win
+  ret$response_Amov <- massey_data$Afix_mov
   
   if(length(preds) == 1 && all(preds == "all")) {
     massey_data <- massey_data |> 
@@ -1405,8 +1411,6 @@ make_design_response <- function(massey_data, season_cutoff = 2010, preds = "all
       dplyr::select(all_of(c(preds, "Afix_win")))
   }
   
-  ret <- list()
-  
   if(model == "first-order") {
     model_formula <- formula(Afix_win ~ 0 + .)
   } else if(model == "second-order"){
@@ -1418,8 +1422,6 @@ make_design_response <- function(massey_data, season_cutoff = 2010, preds = "all
     as.data.frame() |> 
     dplyr::mutate(across(.cols = everything(), .fns = \(x) scale(x, center = TRUE, scale = TRUE))) |> 
     as.matrix()
-  
-  ret$response <- massey_data$Afix_win
   
   return(ret)
 }
@@ -1463,7 +1465,8 @@ predSummary <- tibble(Pred = names(coef(cvModel, s = "lambda.min")[, 1]),
   dplyr::arrange(desc(abs(Coeff)))
 }
 
-design_response_file <- paste0(tourneyYear, "/design_response_", tourneyYear, "_", ifelse(womens, "W", "M"), ".rds")
+design_response_file <- paste0(tourney_year, "/design_response_", tourney_year, "_", ifelse(womens, "W", "M"), ".rds")
+design_response <- list()
 
 if(file.exists(design_response_file) == FALSE) {
 if(womens == FALSE) {
@@ -1489,11 +1492,11 @@ if(womens == FALSE) {
               'A_against_Ast', 'B_against_Ast')
   
   # Creating first-order design matrix for model fitting
-  designMatFit <- make_design_response(massey_data = massey_ELOAPMix, 
+  design_response$designMatFit <- make_design_response(massey_data = massey_ELOAPMix, 
                                        preds = pkeeps, model = "first-order")
   
   # Creating second-order design matrix for model fitting
-  designMatFit2 <- make_design_response(massey_data = massey_ELOAPMix, 
+  design_response$designMatFit2 <- make_design_response(massey_data = massey_ELOAPMix, 
                                         preds = pkeeps, model = "second-order")
 } else {
   # Important predictor variables
@@ -1531,15 +1534,15 @@ if(womens == FALSE) {
               'A_against_Blk', 'B_against_Blk')
 
   # Creating first-order design matrix for model fitting
-  designMatFit <- make_design_response(massey_data = massey_ELOAPMix, 
+  design_response$designMatFit <- make_design_response(massey_data = massey_ELOAPMix, 
                                        preds = pkeeps, model = "first-order")
   
   # Creating second-order design matrix for model fitting
-  designMatFit2 <- make_design_response(massey_data = massey_ELOAPMix, 
+  design_response$designMatFit2 <- make_design_response(massey_data = massey_ELOAPMix, 
                                         preds = pkeeps, model = "second-order")
 }
 
-  design_response <- list(designMatFit, designMatFit2)
+  design_response$massey_ELOAPMix <- massey_ELOAPMix
   
 # Saving design and response data for model fitting
 write_rds(design_response, file = design_response_file)
@@ -1547,8 +1550,8 @@ write_rds(design_response, file = design_response_file)
   design_response <- read_rds(design_response_file)
 }
 
-# Fitting models ----------------------------------------------------------
-
+# Freeing memory up
+gc()
 
 
 # Making final design matrix ----------------------------------------------
@@ -1589,8 +1592,6 @@ designMatFitDupe <- massey_ELOAPMixDupe |>
 designMatFit <- make_design_response(massey_data = massey_ELOAPMix, 
                                      preds = pkeeps, model = "first-order")
 
-designMatFit$
-
 # Final Predictions -------------------------------------------------------
 
 model <- "MOV"
@@ -1598,7 +1599,7 @@ model <- "MOV"
 predsDir <- paste0("/Preds/", model, "/")
 
 # Adding empty tournament games to predict for
-sampleSubmission <- read_csv(paste0(stageDir, "SampleSubmission", tourneyYear, ".csv"))
+sampleSubmission <- read_csv(paste0(stageDir, "SampleSubmission", tourney_year, ".csv"))
 
 matchups <- sampleSubmission |> 
   mutate(Season = as.integer(map_chr(str_split(ID, pattern = "_"), 1)), 
@@ -1607,7 +1608,7 @@ matchups <- sampleSubmission |>
   dplyr::select(-ID, -Pred)
 
 # Read in model fits to make predictions
-myFinalMods <- readRDS(paste0(tourneyYear, "/finalFits_", ifelse(womens, "W", "M"),
+myFinalMods <- readRDS(paste0(tourney_year, "/finalFits_", ifelse(womens, "W", "M"),
                               "_", model, ".rds"))
 
 designMat <- designRows2
@@ -1642,14 +1643,14 @@ write_csv(matchups |> dplyr::filter(Afix_TeamID %in% lastObserved$TeamID |
                                      Bfix_TeamID %in% lastObserved$TeamID) |> 
             dplyr::mutate(ID = stringr::str_c(Season, "_", Afix_TeamID, "_", Bfix_TeamID),
                           Pred = finalPreds$nnet) |> dplyr::select(ID, Pred), 
-          file = paste0(tourneyYear, predsDir, "preds_nnet_", 
+          file = paste0(tourney_year, predsDir, "preds_nnet_", 
                         ifelse(womens, "W", "M"), "_", model, "_only.csv"))
 
 write_csv(matchups |> dplyr::filter(Afix_TeamID %in% lastObserved$TeamID |
                                        Bfix_TeamID %in% lastObserved$TeamID) |> 
             dplyr::mutate(ID = stringr::str_c(Season, "_", Afix_TeamID, "_", Bfix_TeamID),
                           Pred = finalPreds$glmnet) |> dplyr::select(ID, Pred), 
-          file = paste0(tourneyYear, predsDir, "preds_glmnet_", 
+          file = paste0(tourney_year, predsDir, "preds_glmnet_", 
                         ifelse(womens, "W", "M"), "_", model, "_only.csv"))
 
 # Merging with sample submission
@@ -1668,7 +1669,7 @@ finalNnet <- sampleSubmission |> dplyr::select(-Pred) |>
                             Pred = finalPreds$nnet) |> dplyr::select(ID, Pred))
 
 write_csv(finalNnet, 
-          file = paste0(tourneyYear, predsDir, "preds_nnet_", 
+          file = paste0(tourney_year, predsDir, "preds_nnet_", 
                         ifelse(womens, "W", "M"), "_", model, "_",
                         "partial", ".csv"))
 
@@ -1679,34 +1680,34 @@ finalGlmnet <- sampleSubmission |> dplyr::select(-Pred) |>
                             Pred = finalPreds$glmnet) |> dplyr::select(ID, Pred))
 
 write_csv(finalGlmnet, 
-          file = paste0(tourneyYear, predsDir, "preds_glmnet_", 
+          file = paste0(tourney_year, predsDir, "preds_glmnet_", 
                         ifelse(womens, "W", "M"), "_", model, "_",
                         "partial", ".csv"))
 
 
 # Combining mens and womens predictions for final submission
-mensPReds <- read_csv(paste0(tourneyYear, predsDir, "preds_nnet_", "M", "_", 
+mensPReds <- read_csv(paste0(tourney_year, predsDir, "preds_nnet_", "M", "_", 
                              model, "_partial", ".csv")) |> drop_na()
 
-womensPReds <- read_csv(paste0(tourneyYear, predsDir, "preds_nnet_", "W", "_", 
+womensPReds <- read_csv(paste0(tourney_year, predsDir, "preds_nnet_", "W", "_", 
                              model, "_partial", ".csv")) |> drop_na()
 
 
 write_csv(bind_rows(mensPReds, womensPReds), 
-          file = paste0(tourneyYear, "/Preds/preds_nnet_", "MW", "_", 
+          file = paste0(tourney_year, "/Preds/preds_nnet_", "MW", "_", 
                         model, "_final", ".csv"))
 
 # Data for Tournament Predictions -----------------------------------------
   
   # Data for final games
   lastAGames <- massey_ELOAPMix |> 
-    dplyr::filter(Season == tourneyYear) |> 
+    dplyr::filter(Season == tourney_year) |> 
     arrange(DayNum) |> 
     group_by(Afix_TeamID) |> 
     slice_tail(n = 1) |> ungroup()
   
   lastBGames <- massey_ELOAPMix |> 
-    dplyr::filter(Season == tourneyYear) |> 
+    dplyr::filter(Season == tourney_year) |> 
     arrange(DayNum) |> 
     group_by(Bfix_TeamID) |> 
     slice_tail(n = 1) |> ungroup()
