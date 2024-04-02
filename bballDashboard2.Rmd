@@ -33,6 +33,7 @@ output:
 library(flexdashboard)
 library(tidyverse)
 library(lubridate)
+library(png)
 library(showtext) # for custom Google fonts
 library(wordcloud2) 
 library(tidytext)
@@ -54,11 +55,15 @@ font_add_google(name = str_to_title(fontFamily),
                 family = fontFamily)
 ```
 
-```{r, include = FALSE, eval = TRUE, warning = FALSE}
-library(showtext)
-library(tidyverse)
-library(png)
-library(shadowtext)
+```{r, include = FALSE, eval = TRUE}
+# Logo and home location information from: https://www.google.com/maps/d/u/0/viewer?mid=1JaZgEuzxZ5Sn2UjtA1vTIstU8Fjfl8MM&ll=39.374932225470644%2C-95.83631723748385&z=5
+
+# Setting working directory
+if(Sys.info()["sysname"] != "Darwin") {
+start_dir <- "H:/My Drive/dilerand@mail.gvsu.edu 2022-11-21 21 19/Other/Fun/March Madness/"
+} else {
+  start_dir <- "/Users/dilerand/Library/CloudStorage/GoogleDrive-asdilernia@gmail.com/My Drive/dilerand@mail.gvsu.edu 2022-11-21 21:19/Other/Fun/March Madness/"
+}
 
 showtext_auto()
 
@@ -66,15 +71,42 @@ womens <- FALSE
 tourney_year <- 2024
 
 # Setting working directory
-setwd(paste0("H:/My Drive/dilerand@mail.gvsu.edu 2022-11-21 21 19/Other/Fun/March Madness/", tourney_year))
+setwd(paste0(start_dir, tourney_year))
 
 # Setting file paths
 stageDir <- paste0("march-machine-learning-mania-", tourney_year, "/")
 
+setwd(paste0(start_dir, tourney_year))
+
+# Importing team spellings to add in team IDs
+team_spellings <- map_dfr(.x = womens,
+                 .f = function(women) {read_csv(paste0("march-machine-learning-mania-2024/", 
+                                            ifelse(women, "W", "M"),
+                                            "TeamSpellings.csv"))}) |> 
+  dplyr::mutate(merge_team = str_remove_all(str_to_lower(TeamNameSpelling), pattern = " "))
+
+team_spellings <- team_spellings |> 
+  bind_rows(dplyr::mutate(team_spellings, merge_team = str_remove_all(merge_team, pattern = "[^[:alnum:]]")))
+
+# Importing cleaned logos
+team_logos <- tibble(team = str_remove_all(list.files("../team_logo_images",  full.names = FALSE),
+                                           pattern = stringr::fixed(".png")),
+                     path = list.files("../team_logo_images",  full.names = TRUE)) |> 
+  dplyr::rename(merge_team = team) |> 
+  left_join(team_spellings, by = c("merge_team" = "merge_team")) |> 
+  left_join(team_spellings, 
+            by = c("TeamID" = "TeamID"),
+            suffix = c("_drop", ""),
+            relationship = "many-to-many") |> 
+  dplyr::select(-ends_with("drop"), -TeamNameSpelling) |> 
+  dplyr::distinct()
+```
+
+```{r, include = FALSE, eval = TRUE, warning = FALSE}
 # This person did it with ggplot: https://stackoverflow.com/questions/16290052/march-madness-brackets-with-ggplot2
 
 # Function for creating bracket
-draw_bracket <- function(submission, seeds, teams, logo = NULL, lineColor = "black", 
+draw_bracket <- function(submission, seeds, teams, logo = NULL, logo_info = team_logos, lineColor = "black", 
                         fontFamily = "Passion One", textSize = 6, regions = setNames(c("EAST", "WEST", "SOUTH", "MIDWEST"), c("W", "X", "Z", "Y")), retData = FALSE, ndigits = 1) {
   
     region_names <- names(regions)
@@ -86,8 +118,8 @@ draw_bracket <- function(submission, seeds, teams, logo = NULL, lineColor = "bla
                 family = fontFamily)
   
   ### Helper functions
-  first_evens <- function(x) {seq(from=2,to=2*x,length.out=x)}
-  first_odds <- function(x) {seq(from=1,to=2*x-1,length.out=x)}
+  first_evens <- function(x) {seq(from = 2, to = 2*x, length.out = x)}
+  first_odds <- function(x) {seq(from = 1, to = 2*x-1, length.out = x)}
   
   ### calculate y-values for horizontal lines:
   ### this is for top-left corner of the bracket,
@@ -831,7 +863,7 @@ winners_datas <- map(.x = womens, .f = function(x) {
                                  submission = lda_submissions[[ifelse(x, "W", "M")]],
                                  teams = myTeams[[ifelse(x, "W", "M")]],
                                  regions = region_info[[ifelse(x, "W", "M")]]) |> 
-                  distinct() |> 
+                  dplyr::distinct() |> 
                   mutate(game_id = as.integer(as.factor(ifelse(TeamName1 < TeamName2, 
                                                                str_c(TeamName1, "_", TeamName2),
                                                                str_c(TeamName2, "_", TeamName1))))) |> 
@@ -847,11 +879,6 @@ tourney_year <- 2024
 model <- "Awin"
 
 # Setting working directory
-if(Sys.info()["sysname"] != "Darwin") {
-start_dir <- "H:/My Drive/dilerand@mail.gvsu.edu 2022-11-21 21 19/Other/Fun/March Madness/"
-} else {
-  start_dir <- "/Users/dilerand/Library/CloudStorage/GoogleDrive-asdilernia@gmail.com/My Drive/dilerand@mail.gvsu.edu 2022-11-21 21:19/Other/Fun/March Madness/"
-}
 setwd(paste0(start_dir, tourney_year))
 
 # Setting file paths
@@ -867,7 +894,7 @@ long_rounds <- make_matchups_data(seeds = mySeeds[[ifelse(women, "W", "M")]],
                                          submission = lda_submissions[[ifelse(women, "W", "M")]],
                                          teams = myTeams[[ifelse(women, "W", "M")]],
                                          regions = region_info[[ifelse(women, "W", "M")]]) |> 
-  distinct() |> 
+  dplyr::distinct() |> 
   mutate(game_id = as.integer(as.factor(ifelse(TeamName1 < TeamName2, 
                           str_c(TeamName1, "_", TeamName2),
                           str_c(TeamName2, "_", TeamName1))))) |> 
@@ -961,16 +988,6 @@ percent_labeller <- scales::label_percent(accuracy = 0.01, scale = 100)
 ### b) Encode regions (Region1 and Region2) as factors
 ### b) Drop the Pred1, PlayIn, and Seed variables
 ```
-
-```{r, include = FALSE, eval = TRUE}
-# Logo and home location information from: https://www.google.com/maps/d/u/0/viewer?mid=1JaZgEuzxZ5Sn2UjtA1vTIstU8Fjfl8MM&ll=39.374932225470644%2C-95.83631723748385&z=5
-
-setwd(paste0(start_dir, tourney_year))
-
-# Importing cleaned logos
-team_logos <- list.files("../team_logos_images/", include.dirs = TRUE)
-```
-
 
 Tournament Brackets
 ===================================== 
@@ -1090,11 +1107,11 @@ defaultPageSize = 40) |>
 # Function for making data for round / power rankings table
 round_power_data <- function(summary_data, bracket_data, region_data, bracket_res) {
   # Adding seed and region information
-round_probs <- summary_data |> left_join(bind_rows(dplyr::rename(distinct(bracket_data, SeedFav, Favorite), "Team" = "Favorite", "Seed" = "SeedFav"),                                              dplyr::rename(distinct(bracket_data, SeedDog, Underdog), "Team" = "Underdog", "Seed" = "SeedDog")) |>
-  distinct() |> 
+round_probs <- summary_data |> left_join(bind_rows(dplyr::rename(dplyr::distinct(bracket_data, SeedFav, Favorite), "Team" = "Favorite", "Seed" = "SeedFav"),                                              dplyr::rename(dplyr::distinct(bracket_data, SeedDog, Underdog), "Team" = "Underdog", "Seed" = "SeedDog")) |>
+  dplyr::distinct() |> 
   drop_na()) |> 
-  left_join(bind_rows(dplyr::rename(distinct(region_data, TeamName1, Region1), "Region" = "Region1", "Team" = "TeamName1"),                                              dplyr::rename(distinct(region_data, TeamName2, Region2), "Region" = "Region2", "Team" = "TeamName2")) |>
-    distinct() |> 
+  left_join(bind_rows(dplyr::rename(dplyr::distinct(region_data, TeamName1, Region1), "Region" = "Region1", "Team" = "TeamName1"),                                              dplyr::rename(dplyr::distinct(region_data, TeamName2, Region2), "Region" = "Region2", "Team" = "TeamName2")) |>
+    dplyr::distinct() |> 
     drop_na())
 
 # Adding in power rankings and displaying table
@@ -1107,8 +1124,13 @@ return(round_power)
 
 # Function for creating reactable table
 # Following example at: https://kcuilla.github.io/reactablefmtr/articles/themes.html
-round_reactable_fun <- function(myData, gradColors = color_gradient, ndigits = 1) {
-  myData |> 
+round_reactable_fun <- function(myData, logo_info = team_logos, gradColors = color_gradient, ndigits = 1) {
+ myData |> 
+    dplyr::mutate(merge_team = str_remove_all(str_to_lower(Team), pattern = " ")) |> 
+    left_join(logo_info,
+              by = c("merge_team" = "merge_team")) |> 
+    dplyr::distinct(Team, .keep_all = TRUE) |> 
+   dplyr::select(Region:Rank, path, everything(), -merge_team, -TeamID) |>  
   reactable(showSortIcon = FALSE,
           searchable = TRUE,
           defaultSorted = list(Rank = "asc"),
@@ -1135,6 +1157,14 @@ round_reactable_fun <- function(myData, gradColors = color_gradient, ndigits = 1
               format = colFormat(digits = 0),
                   style = color_scales(myData, colors = gradColors)
             ),
+                  path = colDef(cell = function(value) {
+    img_src <- knitr::image_uri(value)
+    image <- htmltools::img(src = img_src, style = "height: 24px;")
+    htmltools::tagList(
+        htmltools::div(style = "display: inline-block; width: 45px", image)
+    )
+},     format = NULL,
+    style = NULL, maxWidth = 100,  align = "center", name = "", sticky = "left", sortable = FALSE),
               Team = colDef(maxWidth = 150, rowHeader = TRUE, sticky = "left"),
               Rating = colDef(
               filterable = FALSE,
@@ -1192,8 +1222,9 @@ Row {.tabset .tabset-fade data-height=700}
 ```{r, include = FALSE, eval = TRUE}
 # Function for creating reactable table
 # Following example at: https://kcuilla.github.io/reactablefmtr/articles/themes.html
-reactableFun <- function(myData, gradColors = color_gradient) {
+matchups_table <- function(myData, gradColors = color_gradient) {
   myData |> 
+    drop_na() |> 
   reactable(showSortIcon = FALSE,
           searchable = TRUE,
           filterable = TRUE,
@@ -1240,16 +1271,18 @@ defaultPageSize = 40) |>
 }
 ```
 
-
 ```{r, eval = TRUE, include = TRUE}
-reactableFun(myData = bracket_res_mens$ret |> 
-               drop_na())
+setwd(paste0(start_dir, tourney_year))
+
+# Following example at: https://kcuilla.github.io/reactablefmtr/articles/themes.html
+matchups_table(myData = bracket_res_mens$ret)
 ```
 
 ### Womens
 
 ```{r, eval = TRUE, include = TRUE}
+setwd(paste0(start_dir, tourney_year))
+
 # Following example at: https://kcuilla.github.io/reactablefmtr/articles/themes.html
-reactableFun(myData = bracket_res_womens$ret |> 
-               drop_na())
+matchups_table(myData = bracket_res_womens$ret)
 ```
